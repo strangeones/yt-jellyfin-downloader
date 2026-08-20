@@ -1,0 +1,16 @@
+# snippet to be added to an existing docker-compose.yml media stack
+services:
+  yt-jellyfin-downloader:
+    build: 
+      context: ./youtube-archive # Ensure this points to the codebase directory
+      dockerfile: Dockerfile
+    container_name: yt-jellyfin-downloader
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_USERNAME=admin
+      - APP_PASSWORD=supersecretpassword
+    volumes:
+      # Map your host media library directory to /app/media inside the container
+      - /path/to/your/jellyfin/youtube/library:/app/media
