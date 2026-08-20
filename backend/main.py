@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 AUTH_USER = os.getenv("APP_USERNAME", "admin")
 AUTH_PASS = os.getenv("APP_PASSWORD", "password")
+AUTO_UPDATE_YTDLP = os.getenv("AUTO_UPDATE_YTDLP", "false").lower() == "true"
 
 app = FastAPI()
 
@@ -45,6 +46,7 @@ current_task = None
 queued_tasks = []
 history = []
 active_process = None
+state_lock = None
 
 def is_valid_youtube_url(url: str) -> bool:
     pattern = r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+$'
@@ -63,7 +65,7 @@ async def fetch_metadata(task):
     try:
         cmd = ["yt-dlp", "-J", "--no-playlist", task['url']]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await proc.communicate()
+        stdout, stderr = await proc.communicate()
         if proc.returncode == 0:
             info = json.loads(stdout)
             task['title'] = info.get('title', 'Unknown Title')
@@ -74,8 +76,12 @@ async def fetch_metadata(task):
                 task['size'] = "Unknown size"
         else:
             task['title'] = "Unknown Title"
-    except Exception:
+            if stderr:
+                err_msg = stderr.decode('utf-8').strip()
+                task['error'] = err_msg.split('\n')[-1] if err_msg else "Unknown metadata error"
+    except Exception as e:
         task['title'] = "Error fetching metadata"
+        task['error'] = str(e)
     finally:
         task['metadata_fetched'] = True
 
@@ -106,13 +112,20 @@ async def fetch_playlist(url: str):
                         "cancelled": False,
                         "metadata_fetched": False
                     }
-                    queued_tasks.append(task)
+                    if state_lock:
+                        async with state_lock:
+                            queued_tasks.append(task)
+                    else:
+                        queued_tasks.append(task)
                     await queue.put(task)
                     asyncio.create_task(fetch_metadata(task))
     except Exception as e:
         print(f"Error fetching playlist: {e}")
 
 async def update_yt_dlp():
+    if not AUTO_UPDATE_YTDLP:
+        print("yt-dlp auto-update is disabled by default. Set AUTO_UPDATE_YTDLP=true to enable.")
+        return
     while True:
         try:
             print("Updating yt-dlp...")
@@ -141,9 +154,10 @@ async def process_queue():
             queue.task_done()
             continue
             
-        current_task = task
-        if task in queued_tasks:
-            queued_tasks.remove(task)
+        async with state_lock:
+            current_task = task
+            if task in queued_tasks:
+                queued_tasks.remove(task)
             
         task['status'] = 'downloading'
         task['expected_files'] = 1
@@ -166,19 +180,24 @@ async def process_queue():
                 task['url']
             ]
             
-            active_process = await asyncio.create_subprocess_exec(
+            proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT
             )
             
-            if task.get('cancelled'):
-                active_process.terminate()
+            async with state_lock:
+                active_process = proc
+                if task.get('cancelled'):
+                    try:
+                        active_process.terminate()
+                    except Exception:
+                        pass
             
             async def read_output():
                 while True:
-                    line = await active_process.stdout.readline()
+                    line = await proc.stdout.readline()
                     if not line:
                         break
                     line = line.decode('utf-8').strip()
@@ -218,7 +237,6 @@ async def process_queue():
                             
                         size_match = re.search(r'of\s+~?([0-9\.]+[a-zA-Z]+)', line)
                         if size_match:
-                            # Only set size if fetch_metadata failed to get a total size
                             if task.get('size') in ('Calculating...', 'Unknown size', 'Unknown'):
                                 task['size'] = size_match.group(1)
                             
@@ -227,7 +245,7 @@ async def process_queue():
                             task['eta'] = eta_match.group(1)
                             
             read_task = asyncio.create_task(read_output())
-            wait_task = asyncio.create_task(active_process.wait())
+            wait_task = asyncio.create_task(proc.wait())
             
             done, pending = await asyncio.wait(
                 [read_task, wait_task], 
@@ -241,7 +259,7 @@ async def process_queue():
             
             if task.get('cancelled'):
                 task['status'] = 'cancelled'
-            elif active_process.returncode == 0:
+            elif proc.returncode == 0:
                 task['status'] = 'completed'
                 task['progress'] = 100.0
                 task['eta'] = "00:00"
@@ -253,28 +271,33 @@ async def process_queue():
             if not task.get('cancelled'):
                 task['status'] = 'failed'
                 task['error'] = str(e)
-            if active_process and active_process.returncode is None:
-                try:
-                    active_process.terminate()
-                except Exception:
-                    pass
         finally:
-            if active_process and active_process.returncode is None:
+            proc_to_wait = None
+            async with state_lock:
+                if active_process and active_process.returncode is None:
+                    try:
+                        active_process.terminate()
+                        proc_to_wait = active_process
+                    except Exception:
+                        pass
+                task['completed_at'] = datetime.now().isoformat()
+                history.insert(0, task)
+                if len(history) > 50:
+                    history.pop()
+                current_task = None
+                active_process = None
+            
+            if proc_to_wait:
                 try:
-                    active_process.terminate()
-                    await asyncio.wait_for(active_process.wait(), timeout=5.0)
+                    await asyncio.wait_for(proc_to_wait.wait(), timeout=5.0)
                 except Exception:
                     pass
-            task['completed_at'] = datetime.now().isoformat()
-            history.insert(0, task)
-            if len(history) > 50:
-                history.pop()
-            current_task = None
-            active_process = None
             queue.task_done()
 
 @app.on_event("startup")
 async def startup_event():
+    global state_lock
+    state_lock = asyncio.Lock()
     asyncio.create_task(update_yt_dlp())
     asyncio.create_task(process_queue())
 
@@ -301,39 +324,55 @@ async def add_download(request: DownloadRequest):
         "metadata_fetched": False
     }
     
-    queued_tasks.append(task)
+    if state_lock:
+        async with state_lock:
+            queued_tasks.append(task)
+    else:
+        queued_tasks.append(task)
+        
     await queue.put(task)
-    
     asyncio.create_task(fetch_metadata(task))
     
     return {"message": "Added to queue", "task_id": task_id}
 
 @app.get("/api/status")
 async def get_status():
-    return {
-        "current": current_task,
-        "queued": queued_tasks,
-        "history": history
-    }
+    if state_lock:
+        async with state_lock:
+            return {
+                "current": current_task,
+                "queued": list(queued_tasks),
+                "history": list(history)
+            }
+    else:
+        return {
+            "current": current_task,
+            "queued": list(queued_tasks),
+            "history": list(history)
+        }
 
 @app.delete("/api/cancel/{task_id}")
 async def cancel_task(task_id: str):
     global active_process, current_task
     
-    for t in queued_tasks:
-        if t['id'] == task_id:
-            t['cancelled'] = True
-            t['status'] = 'cancelled'
-            queued_tasks.remove(t)
-            history.insert(0, t)
-            return {"message": "Queued task cancelled"}
+    async with state_lock:
+        for t in queued_tasks:
+            if t['id'] == task_id:
+                t['cancelled'] = True
+                t['status'] = 'cancelled'
+                queued_tasks.remove(t)
+                history.insert(0, t)
+                return {"message": "Queued task cancelled"}
+                
+        if current_task and current_task['id'] == task_id:
+            current_task['cancelled'] = True
+            if active_process and active_process.returncode is None:
+                try:
+                    active_process.terminate()
+                except Exception:
+                    pass
+            return {"message": "Active task cancelled"}
             
-    if current_task and current_task['id'] == task_id:
-        current_task['cancelled'] = True
-        if active_process:
-            active_process.terminate()
-        return {"message": "Active task cancelled"}
-        
     raise HTTPException(status_code=404, detail="Task not found")
 
 app.mount("/", StaticFiles(directory="/app/frontend", html=True), name="frontend")
