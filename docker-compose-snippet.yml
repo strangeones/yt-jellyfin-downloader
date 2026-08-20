@@ -2,7 +2,7 @@
 services:
   yt-jellyfin-downloader:
     build: 
-      context: ./youtube-archive # Ensure this points to the codebase directory
+      context: ./youtube-archive/sandbox-infra # Ensure this points to the sandbox-infra directory
       dockerfile: Dockerfile
     container_name: yt-jellyfin-downloader
     restart: unless-stopped
