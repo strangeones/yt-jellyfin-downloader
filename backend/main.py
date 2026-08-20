@@ -236,7 +236,7 @@ async def process_queue():
                             base_progress = (current - 1) * 100.0
                             task['progress'] = round((base_progress + raw_progress) / expected, 1)
                             
-                        size_match = re.search(r'of\s+~?([0-9\.]+[a-zA-Z]+)', line)
+                        size_match = re.search(r'of\s+~?\s*([0-9\.]+[a-zA-Z]+)', line)
                         if size_match:
                             if task.get('size') in ('Calculating...', 'Unknown size', 'Unknown'):
                                 task['size'] = size_match.group(1)
