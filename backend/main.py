@@ -49,7 +49,7 @@ active_process = None
 state_lock = None
 
 def is_valid_youtube_url(url: str) -> bool:
-    pattern = r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+$'
+    pattern = r'^(https?://)?([a-zA-Z0-9-]+\.)*(youtube\.com|youtu\.be)/.+$'
     return re.match(pattern, url) is not None
 
 def format_size(bytes_size):
@@ -87,7 +87,7 @@ async def fetch_metadata(task):
 
 async def fetch_playlist(url: str):
     try:
-        cmd = ["yt-dlp", "--flat-playlist", "-J", url]
+        cmd = ["yt-dlp", "--flat-playlist", "--yes-playlist", "-J", "--compat-options", "no-youtube-unavailable-videos", url]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, _ = await proc.communicate()
         if proc.returncode == 0:
@@ -105,12 +105,12 @@ async def fetch_playlist(url: str):
                         "url": video_url,
                         "status": "queued",
                         "added_at": datetime.now().isoformat(),
-                        "title": entry.get('title', 'Fetching metadata...'),
+                        "title": entry.get('title') or 'Unknown Title',
                         "size": "Calculating...",
                         "progress": 0.0,
                         "eta": "",
                         "cancelled": False,
-                        "metadata_fetched": False
+                        "metadata_fetched": True
                     }
                     if state_lock:
                         async with state_lock:
@@ -118,7 +118,8 @@ async def fetch_playlist(url: str):
                     else:
                         queued_tasks.append(task)
                     await queue.put(task)
-                    asyncio.create_task(fetch_metadata(task))
+                    # We intentionally skip launching fetch_metadata(task) here to 
+                    # safely queue mix items without spawning hundreds of subprocesses.
     except Exception as e:
         print(f"Error fetching playlist: {e}")
 
