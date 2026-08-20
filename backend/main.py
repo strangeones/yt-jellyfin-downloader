@@ -302,6 +302,30 @@ async def startup_event():
     asyncio.create_task(update_yt_dlp())
     asyncio.create_task(process_queue())
 
+@app.get("/api/playlist-info")
+async def get_playlist_info(url: str):
+    if not is_valid_youtube_url(url):
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL.")
+    
+    cmd = ["yt-dlp", "--flat-playlist", "-J", "--compat-options", "no-youtube-unavailable-videos", url]
+    try:
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await proc.communicate()
+        
+        if proc.returncode == 0:
+            info = json.loads(stdout)
+            count = info.get('playlist_count')
+            if count is None:
+                entries = info.get('entries', [])
+                count = len(entries)
+                
+            title = info.get('title', 'Unknown Playlist')
+            return {"count": count, "title": title}
+        else:
+            raise HTTPException(status_code=400, detail="Could not fetch playlist info")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/download")
 async def add_download(request: DownloadRequest):
     if not is_valid_youtube_url(request.url):

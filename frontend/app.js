@@ -14,6 +14,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial fetch
     scheduleNextPoll(0);
 
+    const modal = document.getElementById('confirmation-modal');
+    const modalTitle = document.getElementById('modal-title');
+    const modalText = document.getElementById('modal-text');
+    const modalCancelBtn = document.getElementById('modal-cancel-btn');
+    const modalConfirmBtn = document.getElementById('modal-confirm-btn');
+
+    let pendingPlaylistUrl = null;
+
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const url = urlInput.value.trim();
@@ -21,7 +29,58 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!url) return;
 
         submitBtn.disabled = true;
-        showMessage(isPlaylist ? 'Parsing playlist...' : 'Adding to queue...', 'msg-info');
+
+        if (isPlaylist) {
+            showMessage('Fetching playlist info...', 'msg-info');
+            try {
+                const infoRes = await fetch(`/api/playlist-info?url=${encodeURIComponent(url)}`);
+                const infoData = await infoRes.json().catch(() => ({}));
+                
+                if (infoRes.ok) {
+                    modalTitle.textContent = infoData.title || 'Playlist Details';
+                    const count = infoData.count;
+                    modalText.textContent = `This playlist contains ${count} video${count !== 1 ? 's' : ''}. Queue all?`;
+                    
+                    pendingPlaylistUrl = url;
+                    modal.classList.remove('hidden');
+                    showMessage('', ''); // clear info message
+                } else {
+                    showMessage(infoData.detail || 'Failed to fetch playlist info', 'msg-error');
+                    submitBtn.disabled = false;
+                }
+            } catch (err) {
+                showMessage('Network error while fetching playlist info', 'msg-error');
+                submitBtn.disabled = false;
+            }
+        } else {
+            await queueUrl(url, false);
+            submitBtn.disabled = false;
+        }
+    });
+
+    modalCancelBtn.addEventListener('click', () => {
+        modal.classList.add('hidden');
+        pendingPlaylistUrl = null;
+        submitBtn.disabled = false;
+    });
+
+    modalConfirmBtn.addEventListener('click', async () => {
+        if (!pendingPlaylistUrl) return;
+        
+        modalConfirmBtn.disabled = true;
+        modalConfirmBtn.textContent = 'Queueing...';
+        
+        await queueUrl(pendingPlaylistUrl, true);
+        
+        modal.classList.add('hidden');
+        modalConfirmBtn.disabled = false;
+        modalConfirmBtn.textContent = 'Queue All';
+        pendingPlaylistUrl = null;
+        submitBtn.disabled = false;
+    });
+
+    async function queueUrl(url, isPlaylist) {
+        showMessage(isPlaylist ? 'Adding playlist to queue...' : 'Adding to queue...', 'msg-info');
 
         try {
             const response = await fetch('/api/download', {
@@ -35,17 +94,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (response.ok) {
                 showMessage(isPlaylist ? 'Playlist parsing started! Videos will appear in queue shortly.' : 'Successfully added to queue!', 'msg-success');
                 urlInput.value = '';
-                // Force an immediate update
                 scheduleNextPoll(0);
             } else {
                 showMessage(data.detail || 'Failed to add to queue', 'msg-error');
             }
         } catch (err) {
             showMessage('Network error occurred while adding to queue', 'msg-error');
-        } finally {
-            submitBtn.disabled = false;
         }
-    });
+    }
 
     // Event delegation for cancel buttons
     document.body.addEventListener('click', async (e) => {
