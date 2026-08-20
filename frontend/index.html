@@ -13,7 +13,7 @@
         <div class="blob blob-2"></div>
     </div>
 
-    <div class="container glass-panel">
+    <main class="container glass-panel">
         <header>
             <h1>YT to Jellyfin</h1>
             <p>Download and queue videos with perfect metadata.</p>
@@ -21,33 +21,33 @@
 
         <form id="download-form">
             <div class="input-group">
-                <input type="url" id="url-input" placeholder="https://youtube.com/watch?v=..." required>
-                <button type="submit" id="submit-btn">
+                <input type="url" id="url-input" placeholder="https://youtube.com/watch?v=..." aria-label="YouTube URL" required>
+                <button type="submit" id="submit-btn" aria-label="Queue Download">
                     <span>Queue</span>
-                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                 </button>
             </div>
             <div class="options-group">
                 <label class="toggle-switch">
                     <input type="checkbox" id="playlist-toggle">
-                    <span class="slider"></span>
+                    <span class="slider" aria-hidden="true"></span>
                     <span class="label-text">Download entire playlist/mix</span>
                 </label>
             </div>
-            <div id="form-message"></div>
+            <div id="form-message" aria-live="polite"></div>
         </form>
 
-        <div class="status-section">
+        <section class="status-section" aria-label="Download Status">
             <div class="status-card">
                 <h2>Now Downloading</h2>
-                <div id="current-task" class="task-list">
+                <div id="current-task" class="task-list" aria-live="polite">
                     <p class="empty-state">No active downloads</p>
                 </div>
             </div>
 
             <div class="status-card">
                 <h2>Queued <span id="queue-count" class="badge">0</span></h2>
-                <div id="queued-tasks" class="task-list">
+                <div id="queued-tasks" class="task-list" aria-live="polite">
                     <p class="empty-state">Queue is empty</p>
                 </div>
             </div>
@@ -58,8 +58,8 @@
                     <p class="empty-state">No history</p>
                 </div>
             </div>
-        </div>
-    </div>
+        </section>
+    </main>
 
     <script src="app.js"></script>
 </body>
