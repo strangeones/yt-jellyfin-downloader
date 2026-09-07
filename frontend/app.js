@@ -1,8 +1,41 @@
 document.addEventListener('DOMContentLoaded', () => {
     const form = document.getElementById('download-form');
     const urlInput = document.getElementById('url-input');
+    const playlistToggle = document.getElementById('playlist-toggle');
     const formMessage = document.getElementById('form-message');
     const submitBtn = document.getElementById('submit-btn');
+
+    // Auto-detect playlist URLs
+    const isPlaylistUrl = (url) => /[?&]list=|\/playlist/.test(url || '');
+
+    function autoDetectPlaylist(value) {
+        if (isPlaylistUrl(value)) {
+            playlistToggle.checked = true;
+        }
+    }
+
+    urlInput.addEventListener('input', (e) => {
+        autoDetectPlaylist(e.target.value);
+    });
+
+    urlInput.addEventListener('paste', (e) => {
+        const pastedText = (e.clipboardData || window.clipboardData)?.getData('text');
+        if (pastedText) {
+            autoDetectPlaylist(pastedText);
+        } else if (urlInput.value) {
+            autoDetectPlaylist(urlInput.value);
+        }
+        setTimeout(() => autoDetectPlaylist(urlInput.value), 0);
+    });
+
+    // Ensure toggle switch works smoothly with keyboard
+    playlistToggle.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            playlistToggle.checked = !playlistToggle.checked;
+            playlistToggle.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    });
 
     // State for polling
     let pollTimer = null;
@@ -25,7 +58,7 @@ document.addEventListener('DOMContentLoaded', () => {
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const url = urlInput.value.trim();
-        const isPlaylist = document.getElementById('playlist-toggle').checked;
+        const isPlaylist = playlistToggle.checked;
         if (!url) return;
 
         submitBtn.disabled = true;
@@ -94,6 +127,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (response.ok) {
                 showMessage(isPlaylist ? 'Playlist parsing started! Videos will appear in queue shortly.' : 'Successfully added to queue!', 'msg-success');
                 urlInput.value = '';
+                playlistToggle.checked = false;
                 scheduleNextPoll(0);
             } else {
                 showMessage(data.detail || 'Failed to add to queue', 'msg-error');
