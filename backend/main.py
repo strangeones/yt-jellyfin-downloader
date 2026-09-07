@@ -1,42 +1,77 @@
 import asyncio
 import os
 import re
-import base64
 import secrets
 import json
 from datetime import datetime, date
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from backend import auth
 
-AUTH_USER = os.getenv("APP_USERNAME", "admin")
-AUTH_PASS = os.getenv("APP_PASSWORD", "password")
 AUTO_UPDATE_YTDLP = os.getenv("AUTO_UPDATE_YTDLP", "false").lower() == "true"
 
 app = FastAPI()
 
+WHITELIST_PATHS = {
+    "/",
+    "/index.html",
+    "/style.css",
+    "/app.js",
+    "/favicon.ico",
+    "/api/auth/status",
+    "/api/auth/login",
+    "/api/auth/setup",
+    "/api/auth/logout",
+}
+
+STATIC_EXTENSIONS = (
+    ".css", ".js", ".png", ".jpg", ".jpeg", ".gif",
+    ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".map"
+)
+
+def is_request_whitelisted(path: str) -> bool:
+    if path in WHITELIST_PATHS:
+        return True
+    if path.startswith("/static/"):
+        return True
+    if any(path.endswith(ext) for ext in STATIC_EXTENSIONS):
+        return True
+    return False
+
 @app.middleware("http")
-async def basic_auth_middleware(request: Request, call_next):
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Basic "):
-        return Response(
-            content="Unauthorized",
+async def session_auth_middleware(request: Request, call_next):
+    # Allow whitelisted frontend assets and public auth endpoints
+    if is_request_whitelisted(request.url.path):
+        return await call_next(request)
+
+    # Validate session cookie for protected endpoints
+    session_token = request.cookies.get("session_token")
+    username = auth.validate_session(session_token) if session_token else None
+
+    if not username:
+        return JSONResponse(
             status_code=401,
-            headers={"WWW-Authenticate": 'Basic realm="YT Downloader"'}
+            content={"detail": "Unauthorized", "authenticated": False}
         )
-    try:
-        decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
-        username, password = decoded.split(":", 1)
-        if not (secrets.compare_digest(username, AUTH_USER) and secrets.compare_digest(password, AUTH_PASS)):
-            raise Exception()
-    except Exception:
-        return Response(
-            content="Unauthorized",
-            status_code=401,
-            headers={"WWW-Authenticate": 'Basic realm="YT Downloader"'}
-        )
+
+    # Attach authenticated user to request state
+    request.state.user = username
     return await call_next(request)
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class SetupRequest(BaseModel):
+    username: str
+    password: str
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 class DownloadRequest(BaseModel):
     url: Optional[str] = None
@@ -307,8 +342,104 @@ async def process_queue():
 async def startup_event():
     global state_lock
     state_lock = asyncio.Lock()
+    auth.auto_migrate_or_init()
     asyncio.create_task(update_yt_dlp())
     asyncio.create_task(process_queue())
+
+# ---------------------------------------------------------------------------
+# Authentication Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    session_token = request.cookies.get("session_token")
+    username = auth.validate_session(session_token) if session_token else None
+    setup_req = auth.is_setup_required()
+    return {
+        "authenticated": username is not None,
+        "username": username,
+        "setup_required": setup_req
+    }
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest, response: Response):
+    if auth.is_setup_required():
+        raise HTTPException(status_code=400, detail="Initial setup required. Please configure admin credentials first.")
+
+    username = req.username.strip()
+    if not auth.authenticate(username, req.password):
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+
+    token = auth.create_session(username)
+    response.set_cookie(
+        key="session_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=30 * 24 * 3600,
+        path="/"
+    )
+    return {"success": True, "username": username}
+
+@app.post("/api/auth/setup")
+async def auth_setup(req: SetupRequest, response: Response):
+    if not auth.is_setup_required():
+        raise HTTPException(status_code=400, detail="Setup has already been completed.")
+
+    username = req.username.strip()
+    password = req.password
+    if not username:
+        raise HTTPException(status_code=400, detail="Username cannot be empty.")
+    if not password:
+        raise HTTPException(status_code=400, detail="Password cannot be empty.")
+
+    auth.setup_credentials(username, password)
+    token = auth.create_session(username)
+    response.set_cookie(
+        key="session_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=30 * 24 * 3600,
+        path="/"
+    )
+    return {"success": True, "username": username}
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request, response: Response):
+    session_token = request.cookies.get("session_token")
+    if session_token:
+        auth.delete_session(session_token)
+    response.delete_cookie(key="session_token", path="/")
+    return {"success": True, "message": "Logged out successfully"}
+
+@app.post("/api/auth/change-password")
+async def auth_change_password(req: ChangePasswordRequest, request: Request, response: Response):
+    session_token = request.cookies.get("session_token")
+    username = auth.validate_session(session_token) if session_token else None
+    if not username:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    if not auth.verify_user_password(username, req.current_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+
+    new_password = req.new_password
+    if not new_password:
+        raise HTTPException(status_code=400, detail="New password cannot be empty.")
+
+    auth.change_password(username, new_password)
+    # Refresh session with new token
+    auth.delete_session(session_token)
+    new_token = auth.create_session(username)
+    response.set_cookie(
+        key="session_token",
+        value=new_token,
+        httponly=True,
+        samesite="lax",
+        max_age=30 * 24 * 3600,
+        path="/"
+    )
+    return {"success": True, "message": "Password updated successfully"}
 
 @app.get("/api/playlist-info")
 async def get_playlist_info(url: str):

@@ -1,6 +1,6 @@
 # YouTube Jellyfin Downloader - Deployment & Update Guide
 
-This guide explains how to deploy and update the YouTube Jellyfin Downloader sidecar alongside your existing Jellyfin media stack using Docker Compose.
+This guide explains how to deploy, manage, and update the YouTube Jellyfin Downloader sidecar alongside your existing Jellyfin media stack using Docker Compose.
 
 ## 1. Initial Deployment
 
@@ -26,20 +26,45 @@ This guide explains how to deploy and update the YouTube Jellyfin Downloader sid
          - APP_USERNAME=admin
          - APP_PASSWORD=supersecretpassword
        volumes:
+         # Persistent storage for credentials (auth.json)
+         - ./data:/app/data
          # Map to your host's YouTube library directory
          - /path/to/your/jellyfin/youtube/library:/app/media
    ```
 
 3. **Adjust settings**:
-   - Update `APP_USERNAME` and `APP_PASSWORD`.
-   - Update the `/path/to/your/jellyfin/youtube/library` to match the exact directory Jellyfin uses for your YouTube media library.
+   - `APP_USERNAME` and `APP_PASSWORD`: If provided, these are automatically imported into `/app/data/auth.json` on the first launch and hashed with bcrypt. If omitted, the web interface will prompt for initial setup on first visit.
+   - Volume `./data:/app/data`: Ensures your credentials, password hashes, and local settings persist across container rebuilds and updates.
+   - Volume `/path/to/your/jellyfin/youtube/library:/app/media`: Match the exact directory Jellyfin uses for your YouTube media library.
 
 4. **Build and start the container**:
    ```bash
    docker compose up -d --build
    ```
 
-## 2. Updating the Application
+## 2. Password & Credential Management
+
+### Web UI
+- You can log in with full browser password manager autofill support (compatible with Apple Keychain, 1Password, Bitwarden, and Google Password Manager).
+- Once logged in, click your username badge in the top right to open the **Account Settings** modal where you can change your password or log out.
+
+### CLI Password Reset
+If you ever get locked out or need to reset your password via the command line:
+
+**Docker Compose:**
+```bash
+docker compose exec yt-jellyfin-downloader python3 -m backend.auth reset-password --password "YOUR_NEW_PASSWORD"
+```
+
+**Local / Standalone Environment:**
+```bash
+python3 -m backend.auth reset-password --password "YOUR_NEW_PASSWORD"
+```
+*(Optional: You can also specify `--username <USER>` if running multi-user or non-admin).*
+
+The reset command writes directly to the persistent credential store (`auth.json`) with strict `0600` file permissions and terminates existing active sessions.
+
+## 3. Updating the Application
 
 When new features or bug fixes are released, you can update your sidecar easily. Follow these steps from the directory containing your `docker-compose.yml`:
 
@@ -70,7 +95,7 @@ When new features or bug fixes are released, you can update your sidecar easily.
    docker image prune -f
    ```
 
-## 3. Server Maintenance
+## 4. Server Maintenance
 
 If the underlying host system (e.g., Ubuntu/Debian) needs updates, standard maintenance procedures apply. It's a good practice to run this periodically:
 ```bash

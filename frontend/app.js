@@ -12,6 +12,31 @@ document.addEventListener('DOMContentLoaded', () => {
     const formMessage = document.getElementById('form-message');
     const submitBtn = document.getElementById('submit-btn');
 
+    // Auth & Account Elements
+    const accountBadgeBtn = document.getElementById('account-badge-btn');
+    const accountUsername = document.getElementById('account-username');
+    const loginModal = document.getElementById('login-modal');
+    const loginModalTitle = document.getElementById('login-modal-title');
+    const loginModalSubtitle = document.getElementById('login-modal-subtitle');
+    const loginForm = document.getElementById('login-form');
+    const loginUsernameInput = document.getElementById('login-username');
+    const loginPasswordInput = document.getElementById('login-password');
+    const loginSubmitBtn = document.getElementById('login-submit-btn');
+    const loginErrorMsg = document.getElementById('login-error-msg');
+
+    const accountModal = document.getElementById('account-modal');
+    const accountModalCloseBtn = document.getElementById('account-modal-close-btn');
+    const changePasswordForm = document.getElementById('change-password-form');
+    const currentPasswordInput = document.getElementById('current-password');
+    const newPasswordInput = document.getElementById('new-password');
+    const confirmPasswordInput = document.getElementById('confirm-password');
+    const changePassSubmitBtn = document.getElementById('change-pass-submit-btn');
+    const changePassMsg = document.getElementById('change-pass-msg');
+    const logoutBtn = document.getElementById('logout-btn');
+
+    let isSetupMode = false;
+    let currentUser = null;
+
     // Get current active mode
     function getActiveMode() {
         const checked = document.querySelector('input[name="download-mode"]:checked');
@@ -111,8 +136,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let maxPollInterval = 10000;
     let currentPollInterval = basePollInterval;
 
-    // Initial fetch
-    scheduleNextPoll(0);
+    // Initial auth check and status load
+    checkAuthStatus();
 
     const modal = document.getElementById('confirmation-modal');
     const modalTitle = document.getElementById('modal-title');
@@ -348,6 +373,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             const response = await fetch('/api/status');
+            if (response.status === 401) {
+                enableLoginMode();
+                return;
+            }
             if (!response.ok) throw new Error('Network response was not ok');
             
             const data = await response.json();
@@ -480,5 +509,227 @@ document.addEventListener('DOMContentLoaded', () => {
              .replace(/>/g, "&gt;")
              .replace(/"/g, "&quot;")
              .replace(/'/g, "&#039;");
+    }
+
+    // -----------------------------------------------------------------------
+    // Authentication & Session Management
+    // -----------------------------------------------------------------------
+
+    async function checkAuthStatus() {
+        try {
+            const response = await fetch('/api/auth/status');
+            const data = await response.json().catch(() => ({}));
+
+            if (data.setup_required) {
+                enableSetupMode();
+                return false;
+            } else if (!data.authenticated) {
+                enableLoginMode();
+                return false;
+            } else {
+                setAuthenticatedState(data.username);
+                scheduleNextPoll(0);
+                return true;
+            }
+        } catch (err) {
+            enableLoginMode();
+            return false;
+        }
+    }
+
+    function enableSetupMode() {
+        isSetupMode = true;
+        stopPolling();
+        if (accountBadgeBtn) accountBadgeBtn.classList.add('hidden');
+        if (loginModalTitle) loginModalTitle.textContent = 'Welcome - Initial Setup';
+        if (loginModalSubtitle) loginModalSubtitle.textContent = 'Create an administrator username and password to secure your instance.';
+        if (loginSubmitBtn) loginSubmitBtn.textContent = 'Create Account & Sign In';
+        if (loginPasswordInput) loginPasswordInput.setAttribute('autocomplete', 'new-password');
+        showAuthError(loginErrorMsg, '');
+        if (loginModal) loginModal.classList.remove('hidden');
+        if (loginUsernameInput) loginUsernameInput.focus();
+    }
+
+    function enableLoginMode() {
+        isSetupMode = false;
+        stopPolling();
+        if (accountBadgeBtn) accountBadgeBtn.classList.add('hidden');
+        if (loginModalTitle) loginModalTitle.textContent = 'Authentication Required';
+        if (loginModalSubtitle) loginModalSubtitle.textContent = 'Enter your credentials to manage downloads and playlists.';
+        if (loginSubmitBtn) loginSubmitBtn.textContent = 'Log In';
+        if (loginPasswordInput) loginPasswordInput.setAttribute('autocomplete', 'current-password');
+        showAuthError(loginErrorMsg, '');
+        if (loginModal) loginModal.classList.remove('hidden');
+        if (loginUsernameInput) loginUsernameInput.focus();
+    }
+
+    function setAuthenticatedState(username) {
+        currentUser = username || 'admin';
+        if (accountUsername) accountUsername.textContent = currentUser;
+        if (accountBadgeBtn) accountBadgeBtn.classList.remove('hidden');
+        if (loginModal) loginModal.classList.add('hidden');
+        if (loginPasswordInput) loginPasswordInput.value = '';
+        showAuthError(loginErrorMsg, '');
+    }
+
+    function stopPolling() {
+        if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+        }
+        isPolling = false;
+    }
+
+    function showAuthError(element, text) {
+        if (!element) return;
+        if (!text) {
+            element.textContent = '';
+            element.classList.add('hidden');
+        } else {
+            element.textContent = text;
+            element.classList.remove('hidden');
+        }
+    }
+
+    function showAuthMessage(element, text, typeClass) {
+        if (!element) return;
+        if (!text) {
+            element.textContent = '';
+            element.className = 'auth-message hidden';
+        } else {
+            element.textContent = text;
+            element.className = `auth-message ${typeClass}`;
+        }
+    }
+
+    if (loginForm) {
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = loginUsernameInput ? loginUsernameInput.value.trim() : '';
+            const password = loginPasswordInput ? loginPasswordInput.value : '';
+
+            if (!username || !password) {
+                showAuthError(loginErrorMsg, 'Username and password are required.');
+                return;
+            }
+
+            if (loginSubmitBtn) {
+                loginSubmitBtn.disabled = true;
+                loginSubmitBtn.textContent = isSetupMode ? 'Creating Account...' : 'Signing In...';
+            }
+            showAuthError(loginErrorMsg, '');
+
+            const endpoint = isSetupMode ? '/api/auth/setup' : '/api/auth/login';
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json().catch(() => ({}));
+
+                if (response.ok && data.success) {
+                    setAuthenticatedState(data.username || username);
+                    currentPollInterval = basePollInterval;
+                    scheduleNextPoll(0);
+                } else {
+                    showAuthError(loginErrorMsg, data.detail || 'Authentication failed. Please verify your credentials.');
+                }
+            } catch (err) {
+                showAuthError(loginErrorMsg, 'Network error during authentication. Please try again.');
+            } finally {
+                if (loginSubmitBtn) {
+                    loginSubmitBtn.disabled = false;
+                    loginSubmitBtn.textContent = isSetupMode ? 'Create Account & Sign In' : 'Log In';
+                }
+            }
+        });
+    }
+
+    if (accountBadgeBtn) {
+        accountBadgeBtn.addEventListener('click', () => {
+            if (changePasswordForm) changePasswordForm.reset();
+            showAuthMessage(changePassMsg, '', '');
+            if (accountModal) accountModal.classList.remove('hidden');
+            if (currentPasswordInput) currentPasswordInput.focus();
+        });
+    }
+
+    if (accountModalCloseBtn) {
+        accountModalCloseBtn.addEventListener('click', () => {
+            if (accountModal) accountModal.classList.add('hidden');
+            if (changePasswordForm) changePasswordForm.reset();
+            showAuthMessage(changePassMsg, '', '');
+        });
+    }
+
+    if (changePasswordForm) {
+        changePasswordForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const currentPassword = currentPasswordInput ? currentPasswordInput.value : '';
+            const newPassword = newPasswordInput ? newPasswordInput.value : '';
+            const confirmPassword = confirmPasswordInput ? confirmPasswordInput.value : '';
+
+            if (newPassword !== confirmPassword) {
+                showAuthMessage(changePassMsg, 'New passwords do not match.', 'auth-error');
+                return;
+            }
+
+            if (newPassword.length < 4) {
+                showAuthMessage(changePassMsg, 'New password must be at least 4 characters long.', 'auth-error');
+                return;
+            }
+
+            if (changePassSubmitBtn) {
+                changePassSubmitBtn.disabled = true;
+                changePassSubmitBtn.textContent = 'Updating...';
+            }
+            showAuthMessage(changePassMsg, '', '');
+
+            try {
+                const response = await fetch('/api/auth/change-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        current_password: currentPassword,
+                        new_password: newPassword
+                    })
+                });
+
+                const data = await response.json().catch(() => ({}));
+
+                if (response.ok && data.success) {
+                    showAuthMessage(changePassMsg, 'Password updated successfully!', 'auth-success');
+                    changePasswordForm.reset();
+                    setTimeout(() => {
+                        if (accountModal) accountModal.classList.add('hidden');
+                        showAuthMessage(changePassMsg, '', '');
+                    }, 1400);
+                } else {
+                    showAuthMessage(changePassMsg, data.detail || 'Failed to update password.', 'auth-error');
+                }
+            } catch (err) {
+                showAuthMessage(changePassMsg, 'Network error while updating password.', 'auth-error');
+            } finally {
+                if (changePassSubmitBtn) {
+                    changePassSubmitBtn.disabled = false;
+                    changePassSubmitBtn.textContent = 'Update Password';
+                }
+            }
+        });
+    }
+
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', async () => {
+            try {
+                await fetch('/api/auth/logout', { method: 'POST' });
+            } catch (err) {
+                console.error('Logout error:', err);
+            }
+            if (accountModal) accountModal.classList.add('hidden');
+            enableLoginMode();
+        });
     }
 });

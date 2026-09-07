@@ -9,8 +9,12 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Optional: Initial credentials are auto-migrated into /app/data/auth.json on first run.
+      # Once migrated, credentials persist in the data volume and can be changed in the web UI.
       - APP_USERNAME=admin
       - APP_PASSWORD=supersecretpassword
     volumes:
+      # Persistent storage for authentication credentials (auth.json)
+      - ./data:/app/data
       # Map your host media library directory to /app/media inside the container
       - /path/to/your/jellyfin/youtube/library:/app/media
