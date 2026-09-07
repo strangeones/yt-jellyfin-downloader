@@ -1,39 +1,106 @@
 document.addEventListener('DOMContentLoaded', () => {
     const form = document.getElementById('download-form');
     const urlInput = document.getElementById('url-input');
-    const playlistToggle = document.getElementById('playlist-toggle');
+    const modeRadios = document.querySelectorAll('input[name="download-mode"]');
+    const channelOptions = document.getElementById('channel-options');
+    const dateFromInput = document.getElementById('date-from');
+    const dateToInput = document.getElementById('date-to');
+    const mediaAll = document.getElementById('media-all');
+    const mediaVideos = document.getElementById('media-videos');
+    const mediaShorts = document.getElementById('media-shorts');
+    const mediaStreams = document.getElementById('media-streams');
     const formMessage = document.getElementById('form-message');
     const submitBtn = document.getElementById('submit-btn');
 
-    // Auto-detect playlist URLs
-    const isPlaylistUrl = (url) => /[?&]list=|\/playlist/.test(url || '');
+    // Get current active mode
+    function getActiveMode() {
+        const checked = document.querySelector('input[name="download-mode"]:checked');
+        return checked ? checked.value : 'single';
+    }
 
-    function autoDetectPlaylist(value) {
-        if (isPlaylistUrl(value)) {
-            playlistToggle.checked = true;
+    // Set active mode and update UI visibility
+    function setActiveMode(mode) {
+        const targetRadio = document.querySelector(`input[name="download-mode"][value="${mode}"]`);
+        if (targetRadio) {
+            targetRadio.checked = true;
+            handleModeChange(mode);
+        }
+    }
+
+    function handleModeChange(mode) {
+        if (mode === 'channel') {
+            channelOptions.classList.remove('hidden');
+        } else {
+            channelOptions.classList.add('hidden');
+        }
+    }
+
+    modeRadios.forEach(radio => {
+        radio.addEventListener('change', () => {
+            handleModeChange(radio.value);
+        });
+    });
+
+    // Auto-detect playlist and channel URLs
+    const isPlaylistUrl = (url) => /[?&]list=|\/playlist/.test(url || '');
+    const isChannelUrl = (url) => /\/(@|channel\/|c\/|user\/)/.test(url || '');
+
+    function autoDetectMode(value) {
+        if (isChannelUrl(value)) {
+            setActiveMode('channel');
+        } else if (isPlaylistUrl(value)) {
+            setActiveMode('playlist');
         }
     }
 
     urlInput.addEventListener('input', (e) => {
-        autoDetectPlaylist(e.target.value);
+        autoDetectMode(e.target.value);
     });
 
     urlInput.addEventListener('paste', (e) => {
         const pastedText = (e.clipboardData || window.clipboardData)?.getData('text');
         if (pastedText) {
-            autoDetectPlaylist(pastedText);
+            autoDetectMode(pastedText);
         } else if (urlInput.value) {
-            autoDetectPlaylist(urlInput.value);
+            autoDetectMode(urlInput.value);
         }
-        setTimeout(() => autoDetectPlaylist(urlInput.value), 0);
+        setTimeout(() => autoDetectMode(urlInput.value), 0);
     });
 
-    // Ensure toggle switch works smoothly with keyboard
-    playlistToggle.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            playlistToggle.checked = !playlistToggle.checked;
-            playlistToggle.dispatchEvent(new Event('change', { bubbles: true }));
+    // Handle Media Filter Checkboxes
+    function updateMediaCheckboxes() {
+        const isAll = mediaAll.checked;
+        const subCheckboxes = [mediaVideos, mediaShorts, mediaStreams];
+        subCheckboxes.forEach(cb => {
+            cb.disabled = isAll;
+            const label = cb.closest('.media-checkbox-label');
+            if (label) {
+                label.classList.toggle('disabled', isAll);
+            }
+        });
+        if (!isAll) {
+            const anyChecked = subCheckboxes.some(cb => cb.checked);
+            if (!anyChecked) {
+                mediaVideos.checked = true;
+            }
+        }
+    }
+
+    if (mediaAll) {
+        mediaAll.addEventListener('change', updateMediaCheckboxes);
+        updateMediaCheckboxes();
+    }
+
+    [mediaVideos, mediaShorts, mediaStreams].forEach(cb => {
+        if (cb) {
+            cb.addEventListener('change', () => {
+                const subCheckboxes = [mediaVideos, mediaShorts, mediaStreams];
+                const anyChecked = subCheckboxes.some(c => c.checked);
+                if (!anyChecked && mediaAll) {
+                    mediaAll.checked = true;
+                    updateMediaCheckboxes();
+                }
+            });
         }
     });
 
@@ -54,16 +121,79 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalConfirmBtn = document.getElementById('modal-confirm-btn');
 
     let pendingPlaylistUrl = null;
+    let pendingChannelItems = null;
 
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const url = urlInput.value.trim();
-        const isPlaylist = playlistToggle.checked;
+        const mode = getActiveMode();
         if (!url) return;
 
         submitBtn.disabled = true;
 
-        if (isPlaylist) {
+        if (mode === 'channel') {
+            const dateFrom = dateFromInput.value;
+            const dateTo = dateToInput.value;
+
+            if (!dateFrom || !dateTo) {
+                showMessage('Please select both From Date and To Date.', 'msg-error');
+                submitBtn.disabled = false;
+                return;
+            }
+
+            if (dateFrom > dateTo) {
+                showMessage('From Date must be earlier than or equal to To Date.', 'msg-error');
+                submitBtn.disabled = false;
+                return;
+            }
+
+            let mediaTypes = [];
+            if (mediaAll && mediaAll.checked) {
+                mediaTypes = ['all'];
+            } else {
+                if (mediaVideos && mediaVideos.checked) mediaTypes.push('videos');
+                if (mediaShorts && mediaShorts.checked) mediaTypes.push('shorts');
+                if (mediaStreams && mediaStreams.checked) mediaTypes.push('streams');
+                if (mediaTypes.length === 0) mediaTypes = ['all'];
+            }
+
+            showMessage('Scanning channel date range with PID logarithmic search...', 'msg-info');
+
+            try {
+                const response = await fetch('/api/channel-scan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: url,
+                        date_from: dateFrom,
+                        date_to: dateTo,
+                        media_types: mediaTypes
+                    })
+                });
+
+                const data = await response.json().catch(() => ({}));
+
+                if (response.ok) {
+                    if (!data.count || data.count === 0) {
+                        showMessage(`No videos found between ${data.date_from} and ${data.date_to}.`, 'msg-info');
+                        submitBtn.disabled = false;
+                    } else {
+                        modalTitle.textContent = data.channel_title ? `${data.channel_title} - Date Scan` : 'Channel Scan Results';
+                        modalText.textContent = `Found ${data.count} video${data.count !== 1 ? 's' : ''} between ${data.date_from} and ${data.date_to}. Queue all?`;
+                        pendingChannelItems = data.items;
+                        pendingPlaylistUrl = null;
+                        modal.classList.remove('hidden');
+                        showMessage('', '');
+                    }
+                } else {
+                    showMessage(data.detail || 'Failed to scan channel', 'msg-error');
+                    submitBtn.disabled = false;
+                }
+            } catch (err) {
+                showMessage('Network error while scanning channel', 'msg-error');
+                submitBtn.disabled = false;
+            }
+        } else if (mode === 'playlist') {
             showMessage('Fetching playlist info...', 'msg-info');
             try {
                 const infoRes = await fetch(`/api/playlist-info?url=${encodeURIComponent(url)}`);
@@ -75,8 +205,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     modalText.textContent = `This playlist contains ${count} video${count !== 1 ? 's' : ''}. Queue all?`;
                     
                     pendingPlaylistUrl = url;
+                    pendingChannelItems = null;
                     modal.classList.remove('hidden');
-                    showMessage('', ''); // clear info message
+                    showMessage('', '');
                 } else {
                     showMessage(infoData.detail || 'Failed to fetch playlist info', 'msg-error');
                     submitBtn.disabled = false;
@@ -94,22 +225,54 @@ document.addEventListener('DOMContentLoaded', () => {
     modalCancelBtn.addEventListener('click', () => {
         modal.classList.add('hidden');
         pendingPlaylistUrl = null;
+        pendingChannelItems = null;
         submitBtn.disabled = false;
     });
 
     modalConfirmBtn.addEventListener('click', async () => {
-        if (!pendingPlaylistUrl) return;
-        
-        modalConfirmBtn.disabled = true;
-        modalConfirmBtn.textContent = 'Queueing...';
-        
-        await queueUrl(pendingPlaylistUrl, true);
-        
-        modal.classList.add('hidden');
-        modalConfirmBtn.disabled = false;
-        modalConfirmBtn.textContent = 'Queue All';
-        pendingPlaylistUrl = null;
-        submitBtn.disabled = false;
+        if (pendingChannelItems) {
+            modalConfirmBtn.disabled = true;
+            modalConfirmBtn.textContent = 'Queueing...';
+
+            try {
+                const response = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ items: pendingChannelItems })
+                });
+
+                const data = await response.json().catch(() => ({}));
+
+                if (response.ok) {
+                    const count = pendingChannelItems.length;
+                    showMessage(`Successfully queued ${count} video${count !== 1 ? 's' : ''}!`, 'msg-success');
+                    urlInput.value = '';
+                    setActiveMode('single');
+                    scheduleNextPoll(0);
+                } else {
+                    showMessage(data.detail || 'Failed to queue channel videos', 'msg-error');
+                }
+            } catch (err) {
+                showMessage('Network error while queuing channel videos', 'msg-error');
+            } finally {
+                modal.classList.add('hidden');
+                modalConfirmBtn.disabled = false;
+                modalConfirmBtn.textContent = 'Queue All';
+                pendingChannelItems = null;
+                submitBtn.disabled = false;
+            }
+        } else if (pendingPlaylistUrl) {
+            modalConfirmBtn.disabled = true;
+            modalConfirmBtn.textContent = 'Queueing...';
+            
+            await queueUrl(pendingPlaylistUrl, true);
+            
+            modal.classList.add('hidden');
+            modalConfirmBtn.disabled = false;
+            modalConfirmBtn.textContent = 'Queue All';
+            pendingPlaylistUrl = null;
+            submitBtn.disabled = false;
+        }
     });
 
     async function queueUrl(url, isPlaylist) {
@@ -127,7 +290,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (response.ok) {
                 showMessage(isPlaylist ? 'Playlist parsing started! Videos will appear in queue shortly.' : 'Successfully added to queue!', 'msg-success');
                 urlInput.value = '';
-                playlistToggle.checked = false;
+                setActiveMode('single');
                 scheduleNextPoll(0);
             } else {
                 showMessage(data.detail || 'Failed to add to queue', 'msg-error');

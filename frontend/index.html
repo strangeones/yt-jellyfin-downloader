@@ -28,11 +28,50 @@
                 </button>
             </div>
             <div class="options-group">
-                <label class="toggle-switch" for="playlist-toggle">
-                    <input type="checkbox" id="playlist-toggle" role="switch">
-                    <span class="slider" aria-hidden="true"></span>
-                    <span class="label-text">Download entire playlist/mix</span>
-                </label>
+                <div class="segmented-control" role="radiogroup" aria-label="Download Mode">
+                    <input type="radio" name="download-mode" id="mode-single" value="single" checked>
+                    <label for="mode-single" class="segment-label" id="label-mode-single">Single Video</label>
+
+                    <input type="radio" name="download-mode" id="mode-playlist" value="playlist">
+                    <label for="mode-playlist" class="segment-label" id="label-mode-playlist">Playlist/Mix</label>
+
+                    <input type="radio" name="download-mode" id="mode-channel" value="channel">
+                    <label for="mode-channel" class="segment-label" id="label-mode-channel">Channel</label>
+                </div>
+            </div>
+
+            <div id="channel-options" class="channel-options hidden" aria-label="Channel Options">
+                <div class="date-pickers-container">
+                    <div class="date-picker-card">
+                        <label for="date-from" class="date-label">From Date</label>
+                        <input type="date" id="date-from" class="date-input">
+                    </div>
+                    <div class="date-picker-card">
+                        <label for="date-to" class="date-label">To Date</label>
+                        <input type="date" id="date-to" class="date-input">
+                    </div>
+                </div>
+                <div class="media-filters-container">
+                    <span class="media-filters-title">Media Types</span>
+                    <div class="media-checkbox-group">
+                        <label class="media-checkbox-label" for="media-all">
+                            <input type="checkbox" id="media-all" checked>
+                            <span class="checkbox-text">All Media</span>
+                        </label>
+                        <label class="media-checkbox-label disabled" for="media-videos">
+                            <input type="checkbox" id="media-videos" disabled>
+                            <span class="checkbox-text">Videos</span>
+                        </label>
+                        <label class="media-checkbox-label disabled" for="media-shorts">
+                            <input type="checkbox" id="media-shorts" disabled>
+                            <span class="checkbox-text">Shorts</span>
+                        </label>
+                        <label class="media-checkbox-label disabled" for="media-streams">
+                            <input type="checkbox" id="media-streams" disabled>
+                            <span class="checkbox-text">Live Streams</span>
+                        </label>
+                    </div>
+                </div>
             </div>
             <div id="form-message" aria-live="polite"></div>
         </form>

@@ -4,7 +4,8 @@ import re
 import base64
 import secrets
 import json
-from datetime import datetime
+from datetime import datetime, date
+from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -38,8 +39,15 @@ async def basic_auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 class DownloadRequest(BaseModel):
-    url: str
+    url: Optional[str] = None
     is_playlist: bool = False
+    items: Optional[List[Dict[str, Any]]] = None
+
+class ChannelScanRequest(BaseModel):
+    url: str
+    date_from: str
+    date_to: str
+    media_types: Optional[List[str]] = ["all"]
 
 queue = asyncio.Queue()
 current_task = None
@@ -326,9 +334,319 @@ async def get_playlist_info(url: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def parse_date_string(date_str: str) -> date:
+    cleaned = date_str.strip()
+    for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y/%m/%d", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            pass
+    raise ValueError(f"Unable to parse date string '{date_str}'. Expected format: YYYY-MM-DD or YYYYMMDD.")
+
+def extract_entry_date(entry: dict) -> Optional[date]:
+    upload_date = entry.get('upload_date')
+    if upload_date and isinstance(upload_date, str) and len(upload_date) == 8 and upload_date.isdigit():
+        try:
+            return datetime.strptime(upload_date, "%Y%m%d").date()
+        except ValueError:
+            pass
+    ts = entry.get('timestamp') or entry.get('release_timestamp')
+    if ts is not None:
+        try:
+            return datetime.fromtimestamp(float(ts)).date()
+        except Exception:
+            pass
+    return None
+
+async def resolve_entry_date(entry: dict) -> Optional[date]:
+    d = extract_entry_date(entry)
+    if d is not None:
+        return d
+    video_url = entry.get('url')
+    if not video_url and entry.get('id'):
+        video_url = f"https://www.youtube.com/watch?v={entry['id']}"
+    if not video_url:
+        return None
+    try:
+        cmd = ["yt-dlp", "-J", "--no-playlist", video_url]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0:
+            info = json.loads(stdout)
+            if 'upload_date' in info:
+                entry['upload_date'] = info['upload_date']
+            if 'timestamp' in info:
+                entry['timestamp'] = info['timestamp']
+            return extract_entry_date(entry)
+    except Exception:
+        pass
+    return None
+
+async def find_boundary_index_pid(
+    entries: list,
+    target_date: date,
+    is_upper_bound: bool,
+    min_step_threshold_days: float = 1.0,
+    kp: float = 0.65,
+    ki: float = 0.05,
+    kd: float = 0.25
+) -> int:
+    n = len(entries)
+    if n == 0:
+        return 0
+
+    date_0 = await resolve_entry_date(entries[0])
+    date_last = await resolve_entry_date(entries[-1])
+
+    if is_upper_bound:
+        # First index where date <= target_date (newest qualifying item)
+        if date_0 is not None and date_0 <= target_date:
+            return 0
+        if date_last is not None and date_last > target_date:
+            return n
+    else:
+        # First index where date < target_date (boundary where items become too old)
+        if date_0 is not None and date_0 < target_date:
+            return 0
+        if date_last is not None and date_last >= target_date:
+            return n
+
+    low = 0
+    high = n - 1
+    curr = (low + high) // 2
+    integral = 0.0
+    prev_error = 0.0
+
+    max_iterations = (n.bit_length() + 2) * 2
+    iteration = 0
+
+    while low + 1 < high and iteration < max_iterations:
+        iteration += 1
+        date_curr = await resolve_entry_date(entries[curr])
+
+        if date_curr is None:
+            curr = (low + high) // 2
+            continue
+
+        # Measure temporal delta in days:
+        temporal_delta_days = float((date_curr - target_date).days)
+
+        if is_upper_bound:
+            if date_curr <= target_date:
+                high = curr
+            else:
+                low = curr
+        else:
+            if date_curr < target_date:
+                high = curr
+            else:
+                low = curr
+
+        if low + 1 >= high:
+            break
+
+        # Apply minimum 1-day step threshold to avoid hourly oscillation
+        if abs(temporal_delta_days) < min_step_threshold_days:
+            error = 0.0
+        else:
+            error = temporal_delta_days
+
+        # PID step computation
+        integral += error
+        integral = max(-30.0, min(30.0, integral))  # Anti-windup
+        derivative = error - prev_error
+        prev_error = error
+
+        pid_output = kp * error + ki * integral + kd * derivative
+
+        date_low = await resolve_entry_date(entries[low])
+        date_high = await resolve_entry_date(entries[high])
+        if date_low and date_high and date_low > date_high:
+            bracket_span_days = max(1.0, float((date_low - date_high).days))
+            density = float(high - low) / bracket_span_days
+        else:
+            density = 1.0
+
+        pid_step = pid_output * density
+
+        mid = (low + high) // 2
+        if abs(temporal_delta_days) < min_step_threshold_days:
+            next_idx = mid
+        else:
+            pid_target = int(round(curr + pid_step))
+            pid_clamped = max(low + 1, min(high - 1, pid_target))
+            # Guaranteed logarithmic bracket shrinkage blended with PID guidance
+            next_idx = int(round(0.5 * pid_clamped + 0.5 * mid))
+            next_idx = max(low + 1, min(high - 1, next_idx))
+
+        curr = next_idx
+
+    return high
+
+async def scan_entries_date_range_pid(entries: list, date_from: date, date_to: date) -> list:
+    if not entries:
+        return []
+
+    # Verify chronological descending order; reverse if channel tab is ascending
+    d0 = await resolve_entry_date(entries[0])
+    d_last = await resolve_entry_date(entries[-1])
+    if d0 and d_last and d0 < d_last:
+        entries = list(reversed(entries))
+
+    # Resolve boundary indices
+    start_idx = await find_boundary_index_pid(entries, date_to, is_upper_bound=True)
+    end_idx = await find_boundary_index_pid(entries, date_from, is_upper_bound=False)
+
+    if start_idx >= end_idx:
+        return []
+
+    # Slice target items
+    target_entries = entries[start_idx:end_idx]
+    result_items = []
+    for entry in target_entries:
+        vid_id = entry.get('id')
+        url = entry.get('url')
+        if not url and vid_id:
+            url = f"https://www.youtube.com/watch?v={vid_id}"
+        if url:
+            d = extract_entry_date(entry)
+            d_str = d.strftime("%Y-%m-%d") if d else ""
+            result_items.append({
+                "id": vid_id or "",
+                "url": url,
+                "title": entry.get('title') or 'Unknown Title',
+                "upload_date": d_str
+            })
+    return result_items
+
+async def fetch_channel_tab_entries(tab_url: str):
+    cmd = [
+        "yt-dlp",
+        "--flat-playlist",
+        "--yes-playlist",
+        "-J",
+        "--compat-options", "no-youtube-unavailable-videos",
+        tab_url
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0:
+            info = json.loads(stdout)
+            title = info.get('channel') or info.get('uploader') or info.get('title') or 'YouTube Channel'
+            entries = info.get('entries') or []
+            return title, entries
+    except Exception as e:
+        print(f"Error fetching channel tab {tab_url}: {e}")
+    return None, []
+
+def determine_channel_tab_urls(url: str, media_types: Optional[List[str]]) -> List[str]:
+    base_url = re.sub(r'/(videos|shorts|streams|featured)/?$', '', url.rstrip('/'))
+    types = [t.lower() for t in (media_types or ['all'])]
+    if 'all' in types:
+        return [f"{base_url}/videos", f"{base_url}/shorts", f"{base_url}/streams"]
+    
+    urls = []
+    if 'videos' in types:
+        urls.append(f"{base_url}/videos")
+    if 'shorts' in types:
+        urls.append(f"{base_url}/shorts")
+    if 'streams' in types:
+        urls.append(f"{base_url}/streams")
+    return urls if urls else [url]
+
+async def scan_channel_date_range(request: ChannelScanRequest):
+    if not is_valid_youtube_url(request.url):
+        raise HTTPException(status_code=400, detail="Invalid YouTube channel URL. Must be from youtube.com or youtu.be.")
+
+    try:
+        target_date_from = parse_date_string(request.date_from)
+        target_date_to = parse_date_string(request.date_to)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
+    if target_date_from > target_date_to:
+        raise HTTPException(status_code=400, detail="From Date cannot be later than To Date.")
+
+    tab_urls = determine_channel_tab_urls(request.url, request.media_types)
+    all_matched_items = []
+    channel_name = None
+    found_any_tab = False
+
+    for tab_url in tab_urls:
+        title, entries = await fetch_channel_tab_entries(tab_url)
+        if title and not channel_name:
+            channel_name = title
+        if entries:
+            found_any_tab = True
+            matched = await scan_entries_date_range_pid(entries, target_date_from, target_date_to)
+            all_matched_items.extend(matched)
+
+    if not found_any_tab:
+        title, entries = await fetch_channel_tab_entries(request.url)
+        if title and not channel_name:
+            channel_name = title
+        if entries:
+            matched = await scan_entries_date_range_pid(entries, target_date_from, target_date_to)
+            all_matched_items.extend(matched)
+
+    unique_items = []
+    seen_ids = set()
+    for item in all_matched_items:
+        vid_id = item.get('id') or item.get('url')
+        if vid_id and vid_id not in seen_ids:
+            seen_ids.add(vid_id)
+            unique_items.append(item)
+
+    return {
+        "channel_title": channel_name or "Channel",
+        "count": len(unique_items),
+        "date_from": request.date_from,
+        "date_to": request.date_to,
+        "items": unique_items
+    }
+
+@app.post("/api/channel-scan")
+async def channel_scan_endpoint(request: ChannelScanRequest):
+    return await scan_channel_date_range(request)
+
 @app.post("/api/download")
 async def add_download(request: DownloadRequest):
-    if not is_valid_youtube_url(request.url):
+    # Support batch channel items
+    if request.items:
+        queued_count = 0
+        for item in request.items:
+            video_url = item.get('url')
+            if not video_url and item.get('id'):
+                video_url = f"https://www.youtube.com/watch?v={item['id']}"
+            if video_url:
+                task_id = secrets.token_hex(8)
+                task = {
+                    "id": task_id,
+                    "url": video_url,
+                    "status": "queued",
+                    "added_at": datetime.now().isoformat(),
+                    "title": item.get('title') or 'Unknown Title',
+                    "size": "Calculating...",
+                    "progress": 0.0,
+                    "eta": "",
+                    "cancelled": False,
+                    "metadata_fetched": True
+                }
+                if state_lock:
+                    async with state_lock:
+                        queued_tasks.append(task)
+                else:
+                    queued_tasks.append(task)
+                await queue.put(task)
+                queued_count += 1
+        return {"message": f"Successfully queued {queued_count} videos", "count": queued_count}
+
+    if not request.url or not is_valid_youtube_url(request.url):
         raise HTTPException(status_code=400, detail="Invalid YouTube URL. Must be from youtube.com or youtu.be.")
         
     if request.is_playlist:
@@ -400,4 +718,6 @@ async def cancel_task(task_id: str):
             
     raise HTTPException(status_code=404, detail="Task not found")
 
-app.mount("/", StaticFiles(directory="/app/frontend", html=True), name="frontend")
+frontend_dir = "/app/frontend" if os.path.exists("/app/frontend") else os.path.join(os.path.dirname(__file__), "..", "frontend")
+if os.path.exists(frontend_dir):
+    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
