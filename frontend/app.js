@@ -37,22 +37,68 @@ document.addEventListener('DOMContentLoaded', () => {
     let isSetupMode = false;
     let currentUser = null;
 
+    // Theme Management (Light/Dark mode)
+    const themeToggleBtn = document.getElementById('theme-toggle-btn');
+
+    function getPreferredTheme() {
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'light' || savedTheme === 'dark') {
+            return savedTheme;
+        }
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+            return 'light';
+        }
+        return 'dark';
+    }
+
+    function applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        if (themeToggleBtn) {
+            const isDark = theme === 'dark';
+            themeToggleBtn.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
+            themeToggleBtn.setAttribute('title', isDark ? 'Switch to light mode' : 'Switch to dark mode');
+        }
+    }
+
+    function toggleTheme() {
+        const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+        localStorage.setItem('theme', newTheme);
+        applyTheme(newTheme);
+    }
+
+    // Initialize Theme
+    applyTheme(getPreferredTheme());
+
+    if (themeToggleBtn) {
+        themeToggleBtn.addEventListener('click', toggleTheme);
+    }
+
+    if (window.matchMedia) {
+        window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
+            if (!localStorage.getItem('theme')) {
+                applyTheme(e.matches ? 'light' : 'dark');
+            }
+        });
+    }
+
     // Get current active mode
     function getActiveMode() {
         const checked = document.querySelector('input[name="download-mode"]:checked');
         return checked ? checked.value : 'single';
     }
 
-    // Set active mode and update UI visibility
+    // Set active mode and update UI visibility immediately
     function setActiveMode(mode) {
         const targetRadio = document.querySelector(`input[name="download-mode"][value="${mode}"]`);
         if (targetRadio) {
             targetRadio.checked = true;
-            handleModeChange(mode);
         }
+        handleModeChange(mode);
     }
 
     function handleModeChange(mode) {
+        if (!channelOptions) return;
         if (mode === 'channel') {
             channelOptions.classList.remove('hidden');
         } else {
@@ -64,7 +110,24 @@ document.addEventListener('DOMContentLoaded', () => {
         radio.addEventListener('change', () => {
             handleModeChange(radio.value);
         });
+        radio.addEventListener('input', () => {
+            handleModeChange(radio.value);
+        });
     });
+
+    document.querySelectorAll('.segment-label').forEach(label => {
+        label.addEventListener('click', () => {
+            const forId = label.getAttribute('for');
+            const radio = document.getElementById(forId);
+            if (radio) {
+                radio.checked = true;
+                handleModeChange(radio.value);
+            }
+        });
+    });
+
+    // Ensure initial mode is cleanly synced
+    handleModeChange(getActiveMode());
 
     // Auto-detect playlist and channel URLs
     const isPlaylistUrl = (url) => /[?&]list=|\/playlist/.test(url || '');

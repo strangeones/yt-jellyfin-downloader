@@ -41,11 +41,24 @@ def is_request_whitelisted(path: str) -> bool:
         return True
     return False
 
+class CacheControlledStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
 @app.middleware("http")
 async def session_auth_middleware(request: Request, call_next):
     # Allow whitelisted frontend assets and public auth endpoints
     if is_request_whitelisted(request.url.path):
-        return await call_next(request)
+        response = await call_next(request)
+        if request.url.path in WHITELIST_PATHS or any(request.url.path.endswith(ext) for ext in STATIC_EXTENSIONS):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
 
     # Validate session cookie for protected endpoints
     session_token = request.cookies.get("session_token")
@@ -851,4 +864,4 @@ async def cancel_task(task_id: str):
 
 frontend_dir = "/app/frontend" if os.path.exists("/app/frontend") else os.path.join(os.path.dirname(__file__), "..", "frontend")
 if os.path.exists(frontend_dir):
-    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+    app.mount("/", CacheControlledStaticFiles(directory=frontend_dir, html=True), name="frontend")

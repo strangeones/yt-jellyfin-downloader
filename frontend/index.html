@@ -1,21 +1,34 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YouTube to Jellyfin</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=2.1.0">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="background-blobs">
-        <div class="blob blob-1"></div>
-        <div class="blob blob-2"></div>
-    </div>
+    <div class="background-spotlight" aria-hidden="true"></div>
 
     <main class="container glass-panel">
         <header>
             <div class="header-actions">
+                <button type="button" id="theme-toggle-btn" class="theme-toggle-btn" aria-label="Toggle theme" title="Toggle theme">
+                    <svg class="theme-icon sun-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="5"></circle>
+                        <line x1="12" y1="1" x2="12" y2="3"></line>
+                        <line x1="12" y1="21" x2="12" y2="23"></line>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                        <line x1="1" y1="12" x2="3" y2="12"></line>
+                        <line x1="21" y1="12" x2="23" y2="12"></line>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                    </svg>
+                    <svg class="theme-icon moon-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                    </svg>
+                </button>
                 <button type="button" id="account-badge-btn" class="account-badge-btn hidden" aria-label="Account Settings">
                     <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="badge-icon" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
                     <span id="account-username">admin</span>
@@ -36,13 +49,22 @@
             <div class="options-group">
                 <div class="segmented-control" role="radiogroup" aria-label="Download Mode">
                     <input type="radio" name="download-mode" id="mode-single" value="single" checked>
-                    <label for="mode-single" class="segment-label" id="label-mode-single">Single Video</label>
+                    <label for="mode-single" class="segment-label" id="label-mode-single">
+                        <svg class="segment-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>
+                        <span>Single Video</span>
+                    </label>
 
                     <input type="radio" name="download-mode" id="mode-playlist" value="playlist">
-                    <label for="mode-playlist" class="segment-label" id="label-mode-playlist">Playlist/Mix</label>
+                    <label for="mode-playlist" class="segment-label" id="label-mode-playlist">
+                        <svg class="segment-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 15 6 3-6 3v-6Z"></path><path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h7"></path></svg>
+                        <span>Playlist/Mix</span>
+                    </label>
 
                     <input type="radio" name="download-mode" id="mode-channel" value="channel">
-                    <label for="mode-channel" class="segment-label" id="label-mode-channel">Channel</label>
+                    <label for="mode-channel" class="segment-label" id="label-mode-channel">
+                        <svg class="segment-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"></rect><polyline points="17 2 12 7 7 2"></polyline></svg>
+                        <span>Channel</span>
+                    </label>
                 </div>
             </div>
 
@@ -172,6 +194,6 @@
         </div>
     </div>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=2.1.0"></script>
 </body>
 </html>
