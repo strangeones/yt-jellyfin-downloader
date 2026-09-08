@@ -27,6 +27,8 @@
 | [`7573dc4`](https://github.com/strangeones/yt-jellyfin-downloader/commit/7573dc4) | **Chore: Add .gitignore** | Ignored `.DS_Store`, `__pycache__/`, `*.pyc`. |
 | [`22e8916`](https://github.com/strangeones/yt-jellyfin-downloader/commit/22e8916) | **Channel Date-Range Logarithmic Search** | 3-way segmented control (`Single Video` \| `Playlist / Mix` \| `Channel`); adjacent glassmorphic date pickers; media checkboxes (`All Media` vs `Videos`, `Shorts`, `Live Streams`) with mutual exclusivity; PID-damped step controller with **1-day minimum step threshold**; confirmation preview modal; batch download queueing. |
 | [`f2cc6d5`](https://github.com/strangeones/yt-jellyfin-downloader/commit/f2cc6d5) | **Persistent Local Password & Session System** | Created [`backend/auth.py`](file:///Users/henrystrange/Documents/Antigravity_Projects/youtube-archive/backend/auth.py) with `bcrypt` (work factor 12) and `/app/data/auth.json` (chmod 600); 30-day `HttpOnly` `SameSite=Lax` session cookies; WHATWG autofill compatibility (Apple Keychain, Bitwarden, 1Password); in-app password changes; auto-migration from legacy `APP_PASSWORD`; headless CLI reset tool. |
+| [`11e47d7`](https://github.com/strangeones/yt-jellyfin-downloader/commit/11e47d7) | **Fix: Set docker build context to ./youtube-archive** | Updated `docker-compose-snippet.yml`, `update-guide.md`, and `README.md` to reference the renamed repository directory `./youtube-archive`. |
+| [`8c9b64a`](https://github.com/strangeones/yt-jellyfin-downloader/commit/8c9b64a) | **Feature: Dual Light/Dark Aesthetic & Theme Switcher** | Professional "Craft Media Ingest" design system with both Light and Dark themes; interactive Sun/Moon theme switcher toggle with `localStorage` persistence and OS `prefers-color-scheme` fallback; 3-way segmented control with inline SVGs for Single Video, Playlist/Mix, and Channel; static spotlight vignette replacing blur blobs; `tabular-nums` typography; and `CacheControlledStaticFiles` + `Cache-Control: no-cache, no-store, must-revalidate` HTTP headers + cache-busting query strings `?v=2.1.0`. |
 
 ---
 
@@ -51,7 +53,7 @@ services:
 
 ### Pulling Updates to Server:
 ```bash
-cd ./youtube-archive
+cd ~/arr_stack/youtube-archive
 git pull origin main
 cd ..
 docker compose up -d --build yt-jellyfin-downloader
@@ -64,15 +66,13 @@ docker compose exec yt-jellyfin-downloader python3 -m backend.auth reset-passwor
 
 ---
 
-## 4. Current State & Immediate Next Milestone
+## 4. Current State & Completed Aesthetic Milestone
 
 ### Aesthetic Transformation: "Craft Media Ingest"
-- **Status**: Deep research completed by Design Lead and 3 specialized subagents (DevTools Craft Specialist, Media Ecosystem Designer, Design Systems Architect).
-- **Proposal Document**: Available in detail at:
-  [`aesthetic_design_proposal.md`](file:///Users/henrystrange/.gemini/antigravity-cli/brain/18adba33-8f7f-4a23-87e7-21342dd045a8/aesthetic_design_proposal.md)
-- **Objective**: Replace the current "vibecoded" aesthetic (floating neon purple blobs, heavy blur filters, continuous GPU animations) with a high-craft, professional media tool:
-  - Solid `#09090B` Obsidian background with subtle static vignette.
-  - Hairline borders (`rgba(255, 255, 255, 0.08)`) with top specular bevels.
-  - 16:9 thumbnail previews with duration badges and technical spec pills (`4K UHD`, `1080p`, `VP9`, `Opus`).
-  - 3-tier ingest hierarchy: **Active Hero Card** (live `MB/s` velocity + 3px progress rail), **Staged Queue Deck**, and **Completed History Ledger**.
-  - `tabular-nums` typography to eradicate polling number jitter.
+- **Status**: Implemented, rigorously tested by independent QA Auditor with 16/16 test PASS, committed, and pushed to `origin/main`.
+- **Features Active**:
+  - **Dual Light / Dark Mode**: Obsidian `#09090b` dark theme with hairline borders and top specular bevels; crisp Zinc `#f8fafc` light theme with clean white cards and deep slate typography.
+  - **Theme Toggle**: Accessible Sun/Moon toggle button in header, syncing with `localStorage` and OS `prefers-color-scheme`.
+  - **Prominent 3-Way Segmented Control**: Distinct icons and labels for `Single Video`, `Playlist/Mix`, and `Channel`, immediately revealing date pickers and media filters when Channel is clicked.
+  - **Cache Prevention**: `CacheControlledStaticFiles` and `Cache-Control: no-cache, no-store, must-revalidate` response headers, combined with `?v=2.1.0` query strings on CSS and JS.
+  - **Anti-Jitter Typography**: Tabular numerals (`font-variant-numeric: tabular-nums`) applied across telemetry, progress, badges, and counters.
