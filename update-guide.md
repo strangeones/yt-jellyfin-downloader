@@ -6,17 +6,17 @@ This guide explains how to deploy, manage, and update the YouTube Jellyfin Downl
 
 1. **Clone the repository** to your server (e.g., in the same directory as your existing `docker-compose.yml`):
    ```bash
-   git clone https://github.com/your-username/youtube-archive.git
+   git clone https://github.com/strangeones/yt-jellyfin-downloader.git youtube-archive
    ```
 
-2. **Add the service** to your existing `docker-compose.yml` media stack. Open your existing `docker-compose.yml` and append the contents of `youtube-archive/sandbox-infra/docker-compose-snippet.yml`. It should look similar to this:
+2. **Add the service** to your existing `docker-compose.yml` media stack. Open your existing `docker-compose.yml` and append the contents of `youtube-archive/docker-compose-snippet.yml`. It should look similar to this:
    ```yaml
    services:
      # ... your existing services (jellyfin, sonarr, radarr, etc.) ...
 
      yt-jellyfin-downloader:
        build: 
-         context: ./youtube-archive/sandbox-infra
+         context: ./youtube-archive
          dockerfile: Dockerfile
        container_name: yt-jellyfin-downloader
        restart: unless-stopped

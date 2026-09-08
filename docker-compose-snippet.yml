@@ -2,7 +2,8 @@
 services:
   yt-jellyfin-downloader:
     build: 
-      context: ./youtube-archive/sandbox-infra # Ensure this points to the sandbox-infra directory
+      # Path to the cloned repository directory relative to this docker-compose.yml
+      context: ./youtube-archive
       dockerfile: Dockerfile
     container_name: yt-jellyfin-downloader
     restart: unless-stopped
