@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YouTube to Jellyfin</title>
-    <link rel="stylesheet" href="style.css?v=2.1.1">
+    <link rel="stylesheet" href="style.css?v=2.2.0">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -53,13 +53,101 @@
                 </button>
             </div>
             <div id="search-results-container" class="search-results-container hidden" aria-live="polite">
-                <div class="search-results-header">
-                    <span>Search Results</span>
-                    <button type="button" id="close-search-btn" class="close-search-btn" aria-label="Close search results">
-                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                    </button>
+                <!-- View 1: Standard Search Results -->
+                <div id="search-results-view" class="results-view">
+                    <div class="search-results-header">
+                        <div class="results-header-title">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <circle cx="11" cy="11" r="8"></circle>
+                                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                            </svg>
+                            <span id="search-results-title-text">Search Results</span>
+                        </div>
+                        <button type="button" id="close-search-btn" class="close-search-btn" aria-label="Close search results">
+                            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                        </button>
+                    </div>
+
+                    <!-- Multi-Select Queue Action Bar for Search -->
+                    <div id="search-batch-bar" class="batch-action-bar hidden">
+                        <div class="batch-bar-left">
+                            <label class="batch-select-label" for="search-select-all">
+                                <input type="checkbox" id="search-select-all" class="custom-checkbox">
+                                <span>Select All</span>
+                            </label>
+                            <span id="search-selected-count" class="batch-count-badge">0 selected</span>
+                        </div>
+                        <div class="batch-bar-right">
+                            <button type="button" id="search-queue-selected-btn" class="btn-primary batch-queue-btn" disabled>
+                                <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                <span>Queue Selected</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="search-results-list" class="search-results-list"></div>
                 </div>
-                <div id="search-results-list" class="search-results-list"></div>
+
+                <!-- View 2: Channel Drill-Down View -->
+                <div id="channel-drilldown-view" class="results-view hidden">
+                    <div class="search-results-header channel-header-nav">
+                        <button type="button" id="channel-back-btn" class="channel-back-btn" aria-label="Back to search results">
+                            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+                            <span>Back to Search</span>
+                        </button>
+                        <button type="button" id="close-channel-btn" class="close-search-btn" aria-label="Close channel view">
+                            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                        </button>
+                    </div>
+
+                    <!-- Channel Hero Card -->
+                    <div class="channel-hero-card">
+                        <div class="channel-hero-meta">
+                            <img id="channel-hero-thumb" class="channel-hero-thumb" src="" alt="Channel Avatar">
+                            <div class="channel-hero-info">
+                                <h3 id="channel-hero-title" class="channel-hero-title">Channel Title</h3>
+                                <div id="channel-hero-handle" class="channel-hero-handle">@handle</div>
+                            </div>
+                        </div>
+                        <div class="channel-hero-actions">
+                            <button type="button" id="channel-download-btn" class="btn-primary channel-download-btn" title="Download Channel by date range">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"></rect><polyline points="17 2 12 7 7 2"></polyline></svg>
+                                <span>Download Channel</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Channel Navigation Tabs -->
+                    <div class="channel-tabs" role="tablist">
+                        <button type="button" id="channel-tab-videos" class="channel-tab active" role="tab" aria-selected="true">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>
+                            <span>Videos</span>
+                        </button>
+                        <button type="button" id="channel-tab-playlists" class="channel-tab" role="tab" aria-selected="false">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 15 6 3-6 3v-6Z"></path><path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h7"></path></svg>
+                            <span>Playlists</span>
+                        </button>
+                    </div>
+
+                    <!-- Multi-Select Action Bar for Channel Videos -->
+                    <div id="channel-batch-bar" class="batch-action-bar hidden">
+                        <div class="batch-bar-left">
+                            <label class="batch-select-label" for="channel-select-all">
+                                <input type="checkbox" id="channel-select-all" class="custom-checkbox">
+                                <span>Select All</span>
+                            </label>
+                            <span id="channel-selected-count" class="batch-count-badge">0 selected</span>
+                        </div>
+                        <div class="batch-bar-right">
+                            <button type="button" id="channel-queue-selected-btn" class="btn-primary batch-queue-btn" disabled>
+                                <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                <span>Queue Selected</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="channel-content-list" class="search-results-list channel-content-list" aria-live="polite"></div>
+                </div>
             </div>
             <div class="options-group">
                 <div class="segmented-control" role="radiogroup" aria-label="Download Mode">
@@ -209,6 +297,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=2.1.0"></script>
+    <script src="app.js?v=2.2.0"></script>
 </body>
 </html>
