@@ -2,7 +2,7 @@
 
 **Project**: `youtube-archive` (YouTube to Jellyfin Downloader Sidecar)  
 **Repository**: `https://github.com/strangeones/yt-jellyfin-downloader.git` (`main` branch)  
-**Last Updated**: September 7, 2026  
+**Last Updated**: September 9, 2026  
 
 ---
 
@@ -15,6 +15,7 @@
    - Generator-Verifier split: coding subagents NEVER verify their own code. Spawn a separate QA & Security Auditor agent in `sandbox-<name>-qa`.
 2. **Commit Policy**:
    - **MANDATORY**: Git commits must **ONLY** happen **AFTER** the independent QA Auditor sub-agent has completed its adversarial testing suite and issued an explicit **PASS** verdict.
+   - **QA Targeting Rule**: QA Auditors MUST identify and review the code for the *latest* feature in the **Completed Milestones & Git History** table, rather than arbitrarily reviewing old milestones.
    - Once QA passes and merges to `main`, updates must be committed and pushed to `origin/main` on GitHub.
 
 ---
@@ -23,6 +24,8 @@
 
 | Commit | Summary | Key Additions |
 | :--- | :--- | :--- |
+| [`0466525`](https://github.com/strangeones/yt-jellyfin-downloader/commit/0466525) | **Fix: Search UI Variables** | Updated the search results container in `style.css` to use the 'Craft Media Ingest' custom properties (`--bg-card`, `--border-hairline`, `--bg-surface`, etc.) to match the aesthetic standard perfectly. |
+| [`28e0b3f`](https://github.com/strangeones/yt-jellyfin-downloader/commit/28e0b3f) | **Feature: Integrated Lightning-Fast YouTube Search** | Converted the single URL input into a Unified Omnibox (`type="text"`); intercepted text queries via `app.js` to dispatch a search instead of a URL download; built an insanely fast custom Python backend scraper in `main.py` (`/api/search`) parsing `ytInitialData` to support instant queries for both Videos and Channels without needing an API key; added an inline animated search results UI in `index.html` that automatically selects the appropriate download mode (Single/Channel) and triggers queue submission when a result is clicked. |
 | [`7f7ef33`](https://github.com/strangeones/yt-jellyfin-downloader/commit/7f7ef33) | **Fix Playlist Toggle Accessibility & Parity** | Replaced `display: none` with accessible visually-hidden CSS + `:focus-visible` focus rings; added playlist URL auto-detection on `input`/`paste`; added `--yes-playlist` parity to [`get_playlist_info()`](file:///Users/henrystrange/Documents/Antigravity_Projects/youtube-archive/backend/main.py). |
 | [`7573dc4`](https://github.com/strangeones/yt-jellyfin-downloader/commit/7573dc4) | **Chore: Add .gitignore** | Ignored `.DS_Store`, `__pycache__/`, `*.pyc`. |
 | [`22e8916`](https://github.com/strangeones/yt-jellyfin-downloader/commit/22e8916) | **Channel Date-Range Logarithmic Search** | 3-way segmented control (`Single Video` \| `Playlist / Mix` \| `Channel`); adjacent glassmorphic date pickers; media checkboxes (`All Media` vs `Videos`, `Shorts`, `Live Streams`) with mutual exclusivity; PID-damped step controller with **1-day minimum step threshold**; confirmation preview modal; batch download queueing. |
