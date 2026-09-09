@@ -3,6 +3,9 @@ import os
 import re
 import secrets
 import json
+import urllib.request
+import urllib.parse
+import urllib.error
 from datetime import datetime, date
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Request, Response, Query
@@ -96,6 +99,14 @@ class ChannelScanRequest(BaseModel):
     date_from: str
     date_to: str
     media_types: Optional[List[str]] = ["all"]
+
+class ChannelQueryRequest(BaseModel):
+    url: Optional[str] = None
+    channel: Optional[str] = None
+    handle: Optional[str] = None
+    channel_id: Optional[str] = None
+    id: Optional[str] = None
+    q: Optional[str] = None
 
 queue = asyncio.Queue()
 current_task = None
@@ -454,27 +465,496 @@ async def auth_change_password(req: ChangePasswordRequest, request: Request, res
     )
     return {"success": True, "message": "Password updated successfully"}
 
+# ---------------------------------------------------------------------------
+# YouTube Scraper Helpers & Channel Parsers
+# ---------------------------------------------------------------------------
+
+def normalize_channel_url(input_str: str) -> str:
+    s = (input_str or "").strip()
+    if not s:
+        return ""
+    if s.startswith("http://") or s.startswith("https://") or s.startswith("www.") or "youtube.com/" in s or "youtu.be/" in s:
+        if not s.startswith("http://") and not s.startswith("https://"):
+            s = f"https://{s}"
+    elif s.startswith("@"):
+        s = f"https://www.youtube.com/{s}"
+    elif s.startswith("UC") and len(s) == 24:
+        s = f"https://www.youtube.com/channel/{s}"
+    else:
+        s = f"https://www.youtube.com/@{s}"
+    s = re.sub(r'/(videos|playlists|shorts|featured|streams|podcasts|posts|community|about)/?$', '', s.rstrip('/'))
+    return s
+
+
+def extract_yt_initial_data(html: str) -> Optional[dict]:
+    for pattern in (r'var ytInitialData\s*=\s*', r'window\["ytInitialData"\]\s*=\s*', r'ytInitialData\s*=\s*'):
+        m = re.search(pattern, html)
+        if m:
+            start_pos = m.end()
+            start_brace = html.find('{', start_pos - 1)
+            if start_brace != -1:
+                try:
+                    data, _ = json.JSONDecoder().raw_decode(html[start_brace:])
+                    return data
+                except Exception:
+                    pass
+    idx = html.find('ytInitialData')
+    if idx != -1:
+        start_brace = html.find('{', idx)
+        if start_brace != -1:
+            try:
+                data, _ = json.JSONDecoder().raw_decode(html[start_brace:])
+                return data
+            except Exception:
+                pass
+    return None
+
+
+def _fetch_youtube_html_sync(url: str) -> str:
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read().decode('utf-8', errors='ignore')
+
+
+async def fetch_youtube_html(url: str) -> str:
+    return await asyncio.to_thread(_fetch_youtube_html_sync, url)
+
+
+def extract_channel_metadata(data: dict) -> dict:
+    meta = data.get('metadata', {}).get('channelMetadataRenderer', {})
+    channel_title = meta.get('title')
+    channel_id = meta.get('externalId')
+    channel_url = meta.get('channelUrl') or meta.get('vanityChannelUrl')
+    avatar_list = meta.get('avatar', {}).get('thumbnails', [])
+    avatar = avatar_list[-1].get('url') if avatar_list else ''
+    
+    if not channel_title:
+        header = data.get('header', {})
+        for hk in ('pageHeaderRenderer', 'c4TabbedHeaderRenderer', 'carouselHeaderRenderer'):
+            hr = header.get(hk, {})
+            if hr:
+                channel_title = hr.get('pageTitle') or hr.get('title', {}).get('simpleText')
+                if not channel_title and 'title' in hr and isinstance(hr['title'], dict):
+                    runs = hr['title'].get('runs', [])
+                    if runs:
+                        channel_title = runs[0].get('text')
+                if not avatar:
+                    hr_avatar = hr.get('avatar', {}).get('thumbnails', [])
+                    if hr_avatar and isinstance(hr_avatar, list):
+                        avatar = hr_avatar[-1].get('url')
+    
+    if not channel_title:
+        channel_title = data.get('microformat', {}).get('microformatDataRenderer', {}).get('title')
+        
+    return {
+        'title': channel_title or 'YouTube Channel',
+        'channel_id': channel_id or '',
+        'channel_url': channel_url or '',
+        'avatar': avatar or ''
+    }
+
+
+def parse_video_item(item: Any, channel_name: str = '') -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    if 'richItemRenderer' in item:
+        item = item['richItemRenderer'].get('content', {})
+    if 'lockupViewModel' in item:
+        lvm = item['lockupViewModel']
+        content_type = lvm.get('contentType', '')
+        if content_type and 'VIDEO' not in content_type and 'SHORTS' not in content_type:
+            return None
+        vid_id = lvm.get('contentId')
+        if not vid_id:
+            on_tap = lvm.get('rendererContext', {}).get('commandContext', {}).get('onTap', {})
+            vid_id = on_tap.get('innertubeCommand', {}).get('watchEndpoint', {}).get('videoId')
+        if not vid_id:
+            return None
+            
+        meta = lvm.get('metadata', {}).get('lockupMetadataViewModel', {})
+        title = meta.get('title', {}).get('content', '')
+        if not title:
+            title = lvm.get('rendererContext', {}).get('accessibilityContext', {}).get('label', '')
+            
+        duration = ''
+        img = lvm.get('contentImage', {}).get('thumbnailViewModel', {})
+        if not img:
+            img = lvm.get('contentImage', {}).get('collectionThumbnailViewModel', {}).get('primaryThumbnail', {}).get('thumbnailViewModel', {})
+            
+        overlays = img.get('overlays', [])
+        for ov in overlays:
+            bottom_ov = ov.get('thumbnailBottomOverlayViewModel', {})
+            badges = bottom_ov.get('badges', [])
+            for b in badges:
+                badge_vm = b.get('thumbnailBadgeViewModel', {})
+                if badge_vm.get('text'):
+                    duration = badge_vm.get('text')
+                    break
+            if duration:
+                break
+                
+        sources = img.get('image', {}).get('sources', [])
+        thumb = sources[-1].get('url') if sources else f'https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg'
+        
+        views = ''
+        published = ''
+        cmvm = meta.get('metadata', {}).get('contentMetadataViewModel', {})
+        rows = cmvm.get('metadataRows', [])
+        for row in rows:
+            parts = row.get('metadataParts', [])
+            for part in parts:
+                txt = part.get('text', {}).get('content', '')
+                if 'view' in txt.lower():
+                    views = txt
+                elif 'ago' in txt.lower() or 'stream' in txt.lower() or 'premier' in txt.lower():
+                    published = txt
+                    
+        return {
+            'type': 'video',
+            'id': vid_id,
+            'url': f'https://www.youtube.com/watch?v={vid_id}',
+            'title': title,
+            'duration': duration,
+            'thumbnail': thumb,
+            'views': views,
+            'published': published,
+            'channel': channel_name
+        }
+
+    renderer = item.get('videoRenderer') or item.get('gridVideoRenderer')
+    if renderer:
+        vid_id = renderer.get('videoId')
+        if not vid_id:
+            return None
+        title = renderer.get('title', {}).get('runs', [{}])[0].get('text') or renderer.get('title', {}).get('simpleText', '')
+        duration = renderer.get('lengthText', {}).get('simpleText') or renderer.get('thumbnailOverlays', [{}])[0].get('thumbnailOverlayTimeStatusRenderer', {}).get('text', {}).get('simpleText', '')
+        thumbs = renderer.get('thumbnail', {}).get('thumbnails', [])
+        thumb = thumbs[-1].get('url') if thumbs else f'https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg'
+        views = renderer.get('viewCountText', {}).get('simpleText') or renderer.get('shortViewCountText', {}).get('simpleText', '')
+        published = renderer.get('publishedTimeText', {}).get('simpleText', '')
+        byline = renderer.get('longBylineText', {}).get('runs', [{}])[0].get('text', '') or renderer.get('shortBylineText', {}).get('runs', [{}])[0].get('text', '')
+        return {
+            'type': 'video',
+            'id': vid_id,
+            'url': f'https://www.youtube.com/watch?v={vid_id}',
+            'title': title,
+            'duration': duration,
+            'thumbnail': thumb,
+            'views': views,
+            'published': published,
+            'channel': channel_name or byline
+        }
+    return None
+
+
+def parse_playlist_item(item: Any, channel_name: str = '') -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    if 'richItemRenderer' in item:
+        item = item['richItemRenderer'].get('content', {})
+    if 'lockupViewModel' in item:
+        lvm = item['lockupViewModel']
+        content_type = lvm.get('contentType', '')
+        if content_type and 'PLAYLIST' not in content_type:
+            return None
+        pl_id = lvm.get('contentId')
+        if not pl_id:
+            on_tap = lvm.get('rendererContext', {}).get('commandContext', {}).get('onTap', {})
+            pl_id = on_tap.get('innertubeCommand', {}).get('watchEndpoint', {}).get('playlistId')
+        if not pl_id:
+            return None
+            
+        meta = lvm.get('metadata', {}).get('lockupMetadataViewModel', {})
+        title = meta.get('title', {}).get('content', '')
+        if not title:
+            title = lvm.get('rendererContext', {}).get('accessibilityContext', {}).get('label', '')
+            
+        video_count = ''
+        img = lvm.get('contentImage', {}).get('collectionThumbnailViewModel', {}).get('primaryThumbnail', {}).get('thumbnailViewModel', {})
+        if not img:
+            img = lvm.get('contentImage', {}).get('thumbnailViewModel', {})
+            
+        overlays = img.get('overlays', [])
+        for ov in overlays:
+            badge_ov = ov.get('thumbnailOverlayBadgeViewModel', {})
+            for b in badge_ov.get('thumbnailBadges', []):
+                b_vm = b.get('thumbnailBadgeViewModel', {})
+                if b_vm.get('text'):
+                    video_count = b_vm.get('text')
+                    break
+            if video_count:
+                break
+                
+        sources = img.get('image', {}).get('sources', [])
+        thumb = sources[-1].get('url') if sources else ''
+        
+        return {
+            'type': 'playlist',
+            'id': pl_id,
+            'url': f'https://www.youtube.com/playlist?list={pl_id}',
+            'title': title,
+            'video_count': video_count,
+            'thumbnail': thumb,
+            'channel': channel_name
+        }
+
+    renderer = item.get('gridPlaylistRenderer') or item.get('playlistRenderer')
+    if renderer:
+        pl_id = renderer.get('playlistId')
+        if not pl_id:
+            return None
+        title = renderer.get('title', {}).get('runs', [{}])[0].get('text') or renderer.get('title', {}).get('simpleText', '')
+        thumbs = renderer.get('thumbnail', {}).get('thumbnails', [])
+        thumb = thumbs[-1].get('url') if thumbs else ''
+        video_count = renderer.get('videoCountShortText', {}).get('simpleText') or renderer.get('videoCountText', {}).get('runs', [{}])[0].get('text') or renderer.get('videoCount', '')
+        byline = renderer.get('longBylineText', {}).get('runs', [{}])[0].get('text', '') or renderer.get('shortBylineText', {}).get('runs', [{}])[0].get('text', '')
+        return {
+            'type': 'playlist',
+            'id': pl_id,
+            'url': f'https://www.youtube.com/playlist?list={pl_id}',
+            'title': title,
+            'video_count': str(video_count),
+            'thumbnail': thumb,
+            'channel': channel_name or byline
+        }
+    return None
+
+
+def extract_videos_from_tab_content(content: dict, channel_name: str = "") -> List[dict]:
+    videos = []
+    seen_ids = set()
+
+    def add_video(item):
+        parsed = parse_video_item(item, channel_name=channel_name)
+        if parsed and parsed.get('id') and parsed['id'] not in seen_ids:
+            seen_ids.add(parsed['id'])
+            videos.append(parsed)
+
+    if 'richGridRenderer' in content:
+        for it in content['richGridRenderer'].get('contents', []):
+            add_video(it)
+
+    if 'sectionListRenderer' in content:
+        for s in content['sectionListRenderer'].get('contents', []):
+            isr = s.get('itemSectionRenderer', {})
+            for it in isr.get('contents', []):
+                if 'gridRenderer' in it:
+                    for git in it['gridRenderer'].get('items', []):
+                        add_video(git)
+                else:
+                    add_video(it)
+
+    if 'gridRenderer' in content:
+        for git in content['gridRenderer'].get('items', []):
+            add_video(git)
+
+    return videos
+
+
+def extract_playlists_from_tab_content(content: dict, channel_name: str = "") -> List[dict]:
+    playlists = []
+    seen_ids = set()
+
+    def add_playlist(item):
+        parsed = parse_playlist_item(item, channel_name=channel_name)
+        if parsed and parsed.get('id') and parsed['id'] not in seen_ids:
+            seen_ids.add(parsed['id'])
+            playlists.append(parsed)
+
+    if 'sectionListRenderer' in content:
+        for s in content['sectionListRenderer'].get('contents', []):
+            isr = s.get('itemSectionRenderer', {})
+            for it in isr.get('contents', []):
+                if 'gridRenderer' in it:
+                    for git in it['gridRenderer'].get('items', []):
+                        add_playlist(git)
+                else:
+                    add_playlist(it)
+
+    if 'richGridRenderer' in content:
+        for it in content['richGridRenderer'].get('contents', []):
+            add_playlist(it)
+
+    if 'gridRenderer' in content:
+        for git in content['gridRenderer'].get('items', []):
+            add_playlist(it)
+
+    return playlists
+
+
+def find_tab_content(data: dict, tab_names: tuple) -> tuple:
+    tabs = data.get('contents', {}).get('twoColumnBrowseResultsRenderer', {}).get('tabs', [])
+    for t in tabs:
+        tr = t.get('tabRenderer', {})
+        title = (tr.get('title') or '').strip().lower()
+        if any(name.lower() in title for name in tab_names):
+            return tr.get('content', {}), tr.get('title')
+    
+    for t in tabs:
+        tr = t.get('tabRenderer', {})
+        if tr.get('selected'):
+            return tr.get('content', {}), tr.get('title')
+            
+    for t in tabs:
+        tr = t.get('tabRenderer', {})
+        if tr.get('content'):
+            return tr.get('content', {}), tr.get('title')
+            
+    return {}, None
+
+
+async def fetch_and_parse_channel_videos(channel_input: str) -> dict:
+    base_url = normalize_channel_url(channel_input)
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Invalid YouTube channel URL or identifier.")
+        
+    target_url = f"{base_url}/videos"
+    try:
+        html = await fetch_youtube_html(target_url)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise HTTPException(status_code=404, detail="Channel not found on YouTube.")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch channel from YouTube (HTTP {e.code}).")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch channel from YouTube: {str(e)}")
+
+    data = extract_yt_initial_data(html)
+    if not data:
+        try:
+            html = await fetch_youtube_html(base_url)
+            data = extract_yt_initial_data(html)
+        except Exception:
+            pass
+
+    if not data:
+        return {
+            "channel": "YouTube Channel",
+            "channel_id": "",
+            "channel_url": base_url,
+            "avatar": "",
+            "count": 0,
+            "videos": [],
+            "items": [],
+            "results": []
+        }
+
+    channel_meta = extract_channel_metadata(data)
+    channel_name = channel_meta.get('title') or 'YouTube Channel'
+    
+    tab_content, _ = find_tab_content(data, ('Videos', 'Uploads'))
+    videos = extract_videos_from_tab_content(tab_content, channel_name=channel_name)
+    
+    if not videos:
+        tabs = data.get('contents', {}).get('twoColumnBrowseResultsRenderer', {}).get('tabs', [])
+        for t in tabs:
+            tc = t.get('tabRenderer', {}).get('content', {})
+            if tc:
+                vids = extract_videos_from_tab_content(tc, channel_name=channel_name)
+                if vids:
+                    videos = vids
+                    break
+
+    return {
+        "channel": channel_name,
+        "channel_id": channel_meta.get('channel_id', ''),
+        "channel_url": channel_meta.get('channel_url') or base_url,
+        "avatar": channel_meta.get('avatar', ''),
+        "count": len(videos),
+        "videos": videos,
+        "items": videos,
+        "results": videos
+    }
+
+
+async def fetch_and_parse_channel_playlists(channel_input: str) -> dict:
+    base_url = normalize_channel_url(channel_input)
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Invalid YouTube channel URL or identifier.")
+        
+    target_url = f"{base_url}/playlists"
+    try:
+        html = await fetch_youtube_html(target_url)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise HTTPException(status_code=404, detail="Channel not found on YouTube.")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch channel from YouTube (HTTP {e.code}).")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch channel from YouTube: {str(e)}")
+
+    data = extract_yt_initial_data(html)
+    if not data:
+        try:
+            html = await fetch_youtube_html(base_url)
+            data = extract_yt_initial_data(html)
+        except Exception:
+            pass
+
+    if not data:
+        return {
+            "channel": "YouTube Channel",
+            "channel_id": "",
+            "channel_url": base_url,
+            "avatar": "",
+            "count": 0,
+            "playlists": [],
+            "items": [],
+            "results": []
+        }
+
+    channel_meta = extract_channel_metadata(data)
+    channel_name = channel_meta.get('title') or 'YouTube Channel'
+    
+    tab_content, _ = find_tab_content(data, ('Playlists',))
+    playlists = extract_playlists_from_tab_content(tab_content, channel_name=channel_name)
+    
+    if not playlists:
+        tabs = data.get('contents', {}).get('twoColumnBrowseResultsRenderer', {}).get('tabs', [])
+        for t in tabs:
+            tc = t.get('tabRenderer', {}).get('content', {})
+            if tc:
+                pls = extract_playlists_from_tab_content(tc, channel_name=channel_name)
+                if pls:
+                    playlists = pls
+                    break
+
+    return {
+        "channel": channel_name,
+        "channel_id": channel_meta.get('channel_id', ''),
+        "channel_url": channel_meta.get('channel_url') or base_url,
+        "avatar": channel_meta.get('avatar', ''),
+        "count": len(playlists),
+        "playlists": playlists,
+        "items": playlists,
+        "results": playlists
+    }
+
+
+# ---------------------------------------------------------------------------
+# Search & Channel Endpoints
+# ---------------------------------------------------------------------------
+
 @app.get("/api/search")
 async def search_youtube(q: str = Query(...)):
     if not q.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     
     try:
-        import urllib.request
-        import urllib.parse
-        import re
-        import json
-        
         url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(q)}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        html = urllib.request.urlopen(req).read().decode('utf-8')
+        html = await fetch_youtube_html(url)
         
-        match = re.search(r'var ytInitialData = (\{.*?\});</script>', html)
-        if not match:
+        data = extract_yt_initial_data(html)
+        if not data:
+            match = re.search(r'var ytInitialData = (\{.*?\});</script>', html)
+            if match:
+                data = json.loads(match.group(1))
+                
+        if not data:
             return {"results": []}
             
-        data = json.loads(match.group(1))
-        
         # Navigate through the JSON structure safely
         contents = []
         try:
@@ -515,12 +995,102 @@ async def search_youtube(q: str = Query(...)):
                     })
                 except (KeyError, IndexError):
                     continue
+            elif 'lockupViewModel' in item:
+                lvm = item['lockupViewModel']
+                try:
+                    ctype = lvm.get('contentType', '')
+                    content_id = lvm.get('contentId', '')
+                    meta = lvm.get('metadata', {}).get('lockupMetadataViewModel', {})
+                    title = meta.get('title', {}).get('content', '')
+                    img = lvm.get('contentImage', {}).get('thumbnailViewModel', {})
+                    sources = img.get('image', {}).get('sources', [])
+                    thumb = sources[-1].get('url') if sources else ''
+                    
+                    if 'CHANNEL' in ctype:
+                        results.append({
+                            'type': 'channel',
+                            'id': content_id,
+                            'url': f"https://www.youtube.com/channel/{content_id}",
+                            'title': title,
+                            'channel': title,
+                            'handle': '',
+                            'thumbnail': thumb
+                        })
+                    elif 'VIDEO' in ctype or content_id:
+                        duration = ''
+                        overlays = img.get('overlays', [])
+                        for ov in overlays:
+                            badges = ov.get('thumbnailBottomOverlayViewModel', {}).get('badges', [])
+                            for b in badges:
+                                txt = b.get('thumbnailBadgeViewModel', {}).get('text')
+                                if txt:
+                                    duration = txt
+                                    break
+                            if duration:
+                                break
+                        results.append({
+                            'type': 'video',
+                            'id': content_id,
+                            'url': f"https://www.youtube.com/watch?v={content_id}",
+                            'title': title,
+                            'channel': '',
+                            'duration': duration,
+                            'thumbnail': thumb or f"https://i.ytimg.com/vi/{content_id}/hqdefault.jpg"
+                        })
+                except Exception:
+                    continue
                     
         return {"results": results[:15]}
         
     except Exception as e:
         print(f"Search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/channel/videos")
+async def get_channel_videos(
+    url: Optional[str] = Query(None),
+    channel: Optional[str] = Query(None),
+    handle: Optional[str] = Query(None),
+    channel_id: Optional[str] = Query(None),
+    id: Optional[str] = Query(None),
+    q: Optional[str] = Query(None)
+):
+    inp = url or channel or handle or channel_id or id or q
+    if not inp or not inp.strip():
+        raise HTTPException(status_code=400, detail="Channel URL, handle, or ID is required.")
+    return await fetch_and_parse_channel_videos(inp)
+
+
+@app.post("/api/channel/videos")
+async def post_channel_videos(req: ChannelQueryRequest):
+    inp = req.url or req.channel or req.handle or req.channel_id or req.id or req.q
+    if not inp or not inp.strip():
+        raise HTTPException(status_code=400, detail="Channel URL, handle, or ID is required.")
+    return await fetch_and_parse_channel_videos(inp)
+
+
+@app.get("/api/channel/playlists")
+async def get_channel_playlists(
+    url: Optional[str] = Query(None),
+    channel: Optional[str] = Query(None),
+    handle: Optional[str] = Query(None),
+    channel_id: Optional[str] = Query(None),
+    id: Optional[str] = Query(None),
+    q: Optional[str] = Query(None)
+):
+    inp = url or channel or handle or channel_id or id or q
+    if not inp or not inp.strip():
+        raise HTTPException(status_code=400, detail="Channel URL, handle, or ID is required.")
+    return await fetch_and_parse_channel_playlists(inp)
+
+
+@app.post("/api/channel/playlists")
+async def post_channel_playlists(req: ChannelQueryRequest):
+    inp = req.url or req.channel or req.handle or req.channel_id or req.id or req.q
+    if not inp or not inp.strip():
+        raise HTTPException(status_code=400, detail="Channel URL, handle, or ID is required.")
+    return await fetch_and_parse_channel_playlists(inp)
 
 @app.get("/api/playlist-info")
 async def get_playlist_info(url: str):
