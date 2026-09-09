@@ -370,6 +370,110 @@ input[type="url"]:focus {
     transition: background-color 5000s ease-in-out 0s;
 }
 
+/* Channel Search Filter Toggle (Craft Media Ingest) */
+.channel-filter-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    min-height: 56px;
+    padding: 0 1.15rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border-hairline);
+    border-radius: 14px;
+    box-shadow: var(--shadow-input-inner), 0 1px 0 0 var(--border-specular);
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
+    white-space: nowrap;
+    position: relative;
+    transition: border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+                background-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+                box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.channel-filter-toggle:hover {
+    border-color: var(--border-hairline-strong);
+    background: var(--bg-surface-hover);
+}
+
+.channel-toggle-input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    margin: 0;
+    pointer-events: none;
+}
+
+.channel-filter-toggle:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3.5px var(--accent-glow), var(--shadow-input-inner), 0 1px 0 0 var(--border-specular);
+}
+
+.channel-toggle-track {
+    position: relative;
+    display: inline-block;
+    width: 34px;
+    height: 20px;
+    background: var(--bg-segmented);
+    border: 1px solid var(--border-hairline-strong);
+    border-radius: 999px;
+    transition: background-color 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+                border-color 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+                box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    flex-shrink: 0;
+}
+
+.channel-toggle-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    background-color: var(--text-muted);
+    border-radius: 50%;
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+                background-color 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.channel-toggle-label {
+    font-size: 0.92rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    letter-spacing: -0.01em;
+    transition: color 0.2s ease, font-weight 0.2s ease;
+}
+
+/* Checked & Active State */
+.channel-toggle-input:checked + .channel-toggle-track {
+    background-color: var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 10px var(--accent-glow);
+}
+
+.channel-toggle-input:checked + .channel-toggle-track .channel-toggle-thumb {
+    transform: translateX(14px);
+    background-color: #ffffff;
+}
+
+.channel-filter-toggle:has(.channel-toggle-input:checked),
+.channel-filter-toggle.active {
+    background: var(--accent-subtle);
+    border-color: rgba(99, 102, 241, 0.4);
+}
+
+[data-theme="light"] .channel-filter-toggle:has(.channel-toggle-input:checked),
+[data-theme="light"] .channel-filter-toggle.active {
+    border-color: rgba(79, 70, 229, 0.35);
+}
+
+.channel-filter-toggle:has(.channel-toggle-input:checked) .channel-toggle-label,
+.channel-filter-toggle.active .channel-toggle-label {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
 button {
     background: var(--accent);
     color: #ffffff;
@@ -1095,6 +1199,13 @@ button:disabled {
         left: 1.1rem;
         width: 18px;
         height: 18px;
+    }
+
+    .channel-filter-toggle {
+        min-height: 46px;
+        justify-content: center;
+        padding: 0 1rem;
+        border-radius: 12px;
     }
 
     button#submit-btn {

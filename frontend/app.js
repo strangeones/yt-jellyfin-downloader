@@ -220,6 +220,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchSelectAll = document.getElementById('search-select-all');
     const searchSelectedCount = document.getElementById('search-selected-count');
     const searchQueueSelectedBtn = document.getElementById('search-queue-selected-btn');
+    const channelFilterToggle = document.getElementById('channel-filter-toggle');
 
     // Channel Drilldown Elements
     const channelDrilldownView = document.getElementById('channel-drilldown-view');
@@ -264,6 +265,27 @@ document.addEventListener('DOMContentLoaded', () => {
             if (channelDrilldownView) channelDrilldownView.classList.add('hidden');
             if (searchResultsView) searchResultsView.classList.remove('hidden');
         });
+    }
+
+    if (channelFilterToggle) {
+        const toggleParent = channelFilterToggle.closest('.channel-filter-toggle');
+        const updateToggleState = () => {
+            if (toggleParent) {
+                toggleParent.classList.toggle('active', channelFilterToggle.checked);
+            }
+        };
+
+        channelFilterToggle.addEventListener('change', () => {
+            updateToggleState();
+            const currentQuery = urlInput.value.trim();
+            if (currentQuery && !/^https?:\/\//i.test(currentQuery)) {
+                if (searchResultsContainer && !searchResultsContainer.classList.contains('hidden')) {
+                    performSearch(currentQuery);
+                }
+            }
+        });
+
+        updateToggleState();
     }
 
     // Generic Batch Queue Function
@@ -326,7 +348,11 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
 
         try {
-            const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+            let searchUrl = `/api/search?q=${encodeURIComponent(query)}`;
+            if (channelFilterToggle && channelFilterToggle.checked) {
+                searchUrl += '&type=channel';
+            }
+            const response = await fetch(searchUrl);
             if (!response.ok) throw new Error('Search failed');
             const data = await response.json();
             
