@@ -603,6 +603,8 @@ def parse_video_item(item: Any, channel_name: str = '') -> Optional[dict]:
         views = ''
         published = ''
         cmvm = meta.get('metadata', {}).get('contentMetadataViewModel', {})
+        if not cmvm:
+            cmvm = meta.get('contentMetadataViewModel', {})
         rows = cmvm.get('metadataRows', [])
         for row in rows:
             parts = row.get('metadataParts', [])
@@ -678,7 +680,11 @@ def parse_playlist_item(item: Any, channel_name: str = '') -> Optional[dict]:
         if not img:
             img = lvm.get('contentImage', {}).get('thumbnailViewModel', {})
             
-        overlays = img.get('overlays', [])
+        overlays = img.get('overlays', []) if isinstance(img, dict) else []
+        if not overlays:
+            overlays = lvm.get('contentImage', {}).get('collectionThumbnailViewModel', {}).get('overlays', [])
+        if not overlays:
+            overlays = lvm.get('contentImage', {}).get('overlays', [])
         for ov in overlays:
             badge_ov = ov.get('thumbnailOverlayBadgeViewModel', {})
             for b in badge_ov.get('thumbnailBadges', []):
@@ -688,6 +694,17 @@ def parse_playlist_item(item: Any, channel_name: str = '') -> Optional[dict]:
                     break
             if video_count:
                 break
+                
+        if not video_count:
+            cmvm = meta.get('metadata', {}).get('contentMetadataViewModel', {}) or meta.get('contentMetadataViewModel', {})
+            for row in cmvm.get('metadataRows', []):
+                for part in row.get('metadataParts', []):
+                    txt = part.get('text', {}).get('content', '')
+                    if 'video' in txt.lower():
+                        video_count = txt
+                        break
+                if video_count:
+                    break
                 
         sources = img.get('image', {}).get('sources', [])
         thumb = sources[-1].get('url') if sources else ''
