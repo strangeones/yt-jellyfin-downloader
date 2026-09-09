@@ -5,7 +5,7 @@ import secrets
 import json
 from datetime import datetime, date
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -453,6 +453,74 @@ async def auth_change_password(req: ChangePasswordRequest, request: Request, res
         path="/"
     )
     return {"success": True, "message": "Password updated successfully"}
+
+@app.get("/api/search")
+async def search_youtube(q: str = Query(...)):
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    
+    try:
+        import urllib.request
+        import urllib.parse
+        import re
+        import json
+        
+        url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(q)}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        html = urllib.request.urlopen(req).read().decode('utf-8')
+        
+        match = re.search(r'var ytInitialData = (\{.*?\});</script>', html)
+        if not match:
+            return {"results": []}
+            
+        data = json.loads(match.group(1))
+        
+        # Navigate through the JSON structure safely
+        contents = []
+        try:
+            primary_contents = data['contents']['twoColumnSearchResultsRenderer']['primaryContents']['sectionListRenderer']['contents']
+            for section in primary_contents:
+                if 'itemSectionRenderer' in section:
+                    contents.extend(section['itemSectionRenderer']['contents'])
+        except KeyError:
+            return {"results": []}
+            
+        results = []
+        for item in contents:
+            if 'videoRenderer' in item:
+                vr = item['videoRenderer']
+                try:
+                    results.append({
+                        'type': 'video',
+                        'id': vr['videoId'],
+                        'url': f"https://www.youtube.com/watch?v={vr['videoId']}",
+                        'title': vr['title']['runs'][0]['text'],
+                        'channel': vr.get('longBylineText', {}).get('runs', [{}])[0].get('text', ''),
+                        'duration': vr.get('lengthText', {}).get('simpleText', ''),
+                        'thumbnail': vr['thumbnail']['thumbnails'][-1]['url']
+                    })
+                except (KeyError, IndexError):
+                    continue
+            elif 'channelRenderer' in item:
+                cr = item['channelRenderer']
+                try:
+                    results.append({
+                        'type': 'channel',
+                        'id': cr['channelId'],
+                        'url': f"https://www.youtube.com/channel/{cr['channelId']}",
+                        'title': cr['title']['simpleText'],
+                        'channel': cr['title']['simpleText'],
+                        'handle': cr.get('subscriberCountText', {}).get('simpleText', ''),
+                        'thumbnail': cr['thumbnail']['thumbnails'][-1]['url']
+                    })
+                except (KeyError, IndexError):
+                    continue
+                    
+        return {"results": results[:15]}
+        
+    except Exception as e:
+        print(f"Search error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/playlist-info")
 async def get_playlist_info(url: str):

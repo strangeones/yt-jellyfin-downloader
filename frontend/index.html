@@ -40,11 +40,20 @@
 
         <form id="download-form">
             <div class="input-group">
-                <input type="url" id="url-input" placeholder="https://youtube.com/watch?v=..." aria-label="YouTube URL" required>
+                <input type="text" id="url-input" placeholder="Search YouTube or paste URL..." aria-label="YouTube URL or Search" required>
                 <button type="submit" id="submit-btn" aria-label="Queue Download">
                     <span>Queue</span>
                     <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                 </button>
+            </div>
+            <div id="search-results-container" class="search-results-container hidden" aria-live="polite">
+                <div class="search-results-header">
+                    <span>Search Results</span>
+                    <button type="button" id="close-search-btn" class="close-search-btn" aria-label="Close search results">
+                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+                <div id="search-results-list" class="search-results-list"></div>
             </div>
             <div class="options-group">
                 <div class="segmented-control" role="radiogroup" aria-label="Download Mode">

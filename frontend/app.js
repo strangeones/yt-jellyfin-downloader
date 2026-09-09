@@ -211,11 +211,93 @@ document.addEventListener('DOMContentLoaded', () => {
     let pendingPlaylistUrl = null;
     let pendingChannelItems = null;
 
+    const searchResultsContainer = document.getElementById('search-results-container');
+    const searchResultsList = document.getElementById('search-results-list');
+    const closeSearchBtn = document.getElementById('close-search-btn');
+
+    if (closeSearchBtn) {
+        closeSearchBtn.addEventListener('click', () => {
+            searchResultsContainer.classList.add('hidden');
+        });
+    }
+
+    async function performSearch(query) {
+        searchResultsContainer.classList.remove('hidden');
+        searchResultsList.innerHTML = `
+            <div class="search-spinner">
+                <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="12" y1="2" x2="12" y2="6"></line>
+                    <line x1="12" y1="18" x2="12" y2="22"></line>
+                    <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line>
+                    <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line>
+                    <line x1="2" y1="12" x2="6" y2="12"></line>
+                    <line x1="18" y1="12" x2="22" y2="12"></line>
+                    <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line>
+                    <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line>
+                </svg>
+            </div>
+        `;
+
+        try {
+            const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+            if (!response.ok) throw new Error('Search failed');
+            const data = await response.json();
+            
+            searchResultsList.innerHTML = '';
+            if (!data.results || data.results.length === 0) {
+                searchResultsList.innerHTML = '<div style="padding: 1rem; color: var(--text-secondary); text-align: center;">No results found</div>';
+                return;
+            }
+
+            data.results.forEach(item => {
+                const isChannel = item.type === 'channel';
+                const el = document.createElement('div');
+                el.className = 'search-result-item';
+                el.innerHTML = `
+                    <img src="${item.thumbnail}" alt="" class="search-result-thumbnail ${isChannel ? 'channel-thumb' : ''}">
+                    <div class="search-result-info">
+                        <div class="search-result-title">${item.title}</div>
+                        <div class="search-result-meta">
+                            ${isChannel ? '<span class="search-result-badge">Channel</span>' : ''}
+                            ${!isChannel && item.duration ? `<span class="search-result-badge">${item.duration}</span>` : ''}
+                            <span>${isChannel ? item.handle : item.channel}</span>
+                        </div>
+                    </div>
+                `;
+                el.addEventListener('click', () => {
+                    urlInput.value = item.url;
+                    searchResultsContainer.classList.add('hidden');
+                    
+                    // Auto-switch mode based on selection
+                    if (isChannel && document.getElementById('mode-channel')) {
+                        document.getElementById('mode-channel').checked = true;
+                        handleModeChange('channel');
+                    } else if (!isChannel && document.getElementById('mode-single')) {
+                        document.getElementById('mode-single').checked = true;
+                        handleModeChange('single');
+                    }
+                    
+                    // Trigger download immediately
+                    form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+                });
+                searchResultsList.appendChild(el);
+            });
+        } catch (error) {
+            searchResultsList.innerHTML = '<div style="padding: 1rem; color: var(--color-error); text-align: center;">Error performing search</div>';
+        }
+    }
+
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const url = urlInput.value.trim();
         const mode = getActiveMode();
         if (!url) return;
+
+        // If not a URL, perform a search instead
+        if (!/^https?:\/\//i.test(url)) {
+            performSearch(url);
+            return;
+        }
 
         submitBtn.disabled = true;
 
