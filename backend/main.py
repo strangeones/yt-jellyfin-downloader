@@ -3,6 +3,7 @@ import os
 import re
 import secrets
 import json
+import subprocess
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -824,30 +825,74 @@ def find_tab_content(data: dict, tab_names: tuple) -> tuple:
     return {}, None
 
 
+def format_duration(dur: Any) -> str:
+    if dur is None:
+        return ""
+    if isinstance(dur, (int, float)):
+        try:
+            sec = int(dur)
+            h = sec // 3600
+            m = (sec % 3600) // 60
+            s = sec % 60
+            if h > 0:
+                return f"{h}:{m:02d}:{s:02d}"
+            return f"{m}:{s:02d}"
+        except (ValueError, TypeError):
+            return str(dur)
+    return str(dur)
+
+
 async def fetch_and_parse_channel_videos(channel_input: str) -> dict:
     base_url = normalize_channel_url(channel_input)
     if not base_url:
         raise HTTPException(status_code=400, detail="Invalid YouTube channel URL or identifier.")
         
     target_url = f"{base_url}/videos"
+    cmd = ["python3", "-m", "yt_dlp", "--flat-playlist", "-J", "--playlist-end", "500", target_url]
+    
     try:
-        html = await fetch_youtube_html(target_url)
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            raise HTTPException(status_code=404, detail="Channel not found on YouTube.")
-        raise HTTPException(status_code=502, detail=f"Failed to fetch channel from YouTube (HTTP {e.code}).")
+        res = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch channel from YouTube: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Failed to execute yt-dlp: {str(e)}")
 
-    data = extract_yt_initial_data(html)
-    if not data:
+    if res.returncode != 0 and target_url != base_url:
+        cmd_fallback = ["python3", "-m", "yt_dlp", "--flat-playlist", "-J", "--playlist-end", "500", base_url]
         try:
-            html = await fetch_youtube_html(base_url)
-            data = extract_yt_initial_data(html)
+            res_fallback = subprocess.run(
+                cmd_fallback,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            if res_fallback.returncode == 0 and res_fallback.stdout.strip():
+                res = res_fallback
         except Exception:
             pass
 
-    if not data:
+    if res.returncode != 0:
+        err = (res.stderr or "").lower()
+        if "404" in err or "not found" in err:
+            raise HTTPException(status_code=404, detail="Channel not found on YouTube.")
+        err_msg = (res.stderr or "").strip()[:200]
+        raise HTTPException(status_code=502, detail=f"Failed to fetch channel from YouTube: {err_msg}")
+
+    try:
+        stdout = (res.stdout or "").strip()
+        start_brace = stdout.find("{")
+        end_brace = stdout.rfind("}")
+        if start_brace != -1 and end_brace != -1:
+            data = json.loads(stdout[start_brace:end_brace + 1])
+        else:
+            data = json.loads(stdout)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to parse yt-dlp response: {str(e)}")
+
+    if not data or not isinstance(data, dict):
         return {
             "channel": "YouTube Channel",
             "channel_id": "",
@@ -859,27 +904,85 @@ async def fetch_and_parse_channel_videos(channel_input: str) -> dict:
             "results": []
         }
 
-    channel_meta = extract_channel_metadata(data)
-    channel_name = channel_meta.get('title') or 'YouTube Channel'
-    
-    tab_content, _ = find_tab_content(data, ('Videos', 'Uploads'))
-    videos = extract_videos_from_tab_content(tab_content, channel_name=channel_name)
-    
-    if not videos:
-        tabs = data.get('contents', {}).get('twoColumnBrowseResultsRenderer', {}).get('tabs', [])
-        for t in tabs:
-            tc = t.get('tabRenderer', {}).get('content', {})
-            if tc:
-                vids = extract_videos_from_tab_content(tc, channel_name=channel_name)
-                if vids:
-                    videos = vids
+    channel_name = data.get("channel") or data.get("uploader") or data.get("title") or "YouTube Channel"
+    if channel_name.endswith(" - Videos"):
+        channel_name = channel_name[:-9]
+        
+    channel_id = data.get("channel_id") or data.get("id") or ""
+    channel_url = data.get("channel_url") or data.get("uploader_url") or base_url
+
+    avatar = ""
+    thumbnails = data.get("thumbnails") or []
+    if isinstance(thumbnails, list):
+        for thumb in reversed(thumbnails):
+            if isinstance(thumb, dict) and thumb.get("id") in ("avatar_uncropped", "avatar"):
+                avatar = thumb.get("url") or ""
+                break
+        if not avatar:
+            for thumb in reversed(thumbnails):
+                if isinstance(thumb, dict) and thumb.get("height") and thumb.get("width") and thumb["height"] == thumb["width"]:
+                    avatar = thumb.get("url") or ""
                     break
+        if not avatar and thumbnails and isinstance(thumbnails[-1], dict):
+            avatar = thumbnails[-1].get("url") or ""
+
+    raw_entries = data.get("entries") or []
+    videos = []
+    seen_ids = set()
+
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        vid_id = entry.get("id") or ""
+        video_url = entry.get("url") or ""
+
+        if not vid_id and video_url:
+            m = re.search(r"(?:v=|/v/|youtu\.be/|/shorts/)([\w-]{11})", video_url)
+            if m:
+                vid_id = m.group(1)
+
+        if not vid_id:
+            continue
+
+        if vid_id in seen_ids:
+            continue
+        seen_ids.add(vid_id)
+
+        if not video_url or not video_url.startswith("http"):
+            video_url = f"https://www.youtube.com/watch?v={vid_id}"
+
+        title = entry.get("title") or ""
+
+        # Duration
+        dur = entry.get("duration")
+        duration_str = entry.get("duration_string") or format_duration(dur)
+
+        # Thumbnail
+        thumb = entry.get("thumbnail") or ""
+        if not thumb:
+            entry_thumbs = entry.get("thumbnails") or []
+            if isinstance(entry_thumbs, list) and entry_thumbs:
+                for t in reversed(entry_thumbs):
+                    if isinstance(t, dict) and t.get("url"):
+                        thumb = t["url"]
+                        break
+        if not thumb:
+            thumb = f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg"
+
+        videos.append({
+            "id": vid_id,
+            "url": video_url,
+            "title": title,
+            "duration": duration_str,
+            "thumbnail": thumb,
+            "type": "video"
+        })
 
     return {
         "channel": channel_name,
-        "channel_id": channel_meta.get('channel_id', ''),
-        "channel_url": channel_meta.get('channel_url') or base_url,
-        "avatar": channel_meta.get('avatar', ''),
+        "channel_id": channel_id,
+        "channel_url": channel_url,
+        "avatar": avatar,
         "count": len(videos),
         "videos": videos,
         "items": videos,
