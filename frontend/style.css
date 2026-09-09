@@ -1005,14 +1005,15 @@ button:disabled {
 
 /* Search Results UI */
 .search-results-container {
-    background: var(--card-bg);
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-lg);
-    margin-top: 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-hairline);
+    border-radius: 16px;
+    margin-top: 1.25rem;
     overflow: hidden;
     display: flex;
     flex-direction: column;
     animation: fadeInDown 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: var(--shadow-specular);
 }
 
 .search-results-container.hidden {
@@ -1024,8 +1025,8 @@ button:disabled {
     justify-content: space-between;
     align-items: center;
     padding: 0.75rem 1rem;
-    background: var(--header-bg);
-    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-hairline);
     font-size: 0.875rem;
     font-weight: 600;
     color: var(--text-secondary);
@@ -1034,19 +1035,19 @@ button:disabled {
 .close-search-btn {
     background: transparent;
     border: none;
-    color: var(--text-tertiary);
+    color: var(--text-muted);
     cursor: pointer;
     padding: 0.25rem;
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: var(--radius-sm);
+    border-radius: 6px;
     transition: all 0.2s;
 }
 
 .close-search-btn:hover {
     color: var(--text-primary);
-    background: var(--hover-bg);
+    background: var(--bg-surface-hover);
 }
 
 .search-results-list {
@@ -1059,22 +1060,23 @@ button:disabled {
     display: flex;
     gap: 1rem;
     padding: 0.75rem;
-    border-radius: var(--radius-md);
+    border-radius: 12px;
     cursor: pointer;
     transition: background-color 0.2s;
 }
 
 .search-result-item:hover {
-    background: var(--hover-bg);
+    background: var(--bg-surface-hover);
 }
 
 .search-result-thumbnail {
     width: 120px;
     height: 68px;
-    border-radius: var(--radius-sm);
+    border-radius: 8px;
     object-fit: cover;
-    background-color: var(--border-color);
+    background-color: var(--bg-surface);
     flex-shrink: 0;
+    border: 1px solid var(--border-hairline);
 }
 
 .search-result-thumbnail.channel-thumb {
@@ -1105,16 +1107,19 @@ button:disabled {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    font-variant-numeric: tabular-nums;
 }
 
 .search-result-badge {
-    background: var(--border-color);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-hairline);
     padding: 0.125rem 0.375rem;
-    border-radius: var(--radius-sm);
+    border-radius: 6px;
     font-size: 0.6875rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+    color: var(--text-muted);
 }
 
 .search-spinner {
