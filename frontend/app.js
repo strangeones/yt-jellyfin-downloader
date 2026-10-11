@@ -630,7 +630,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 searchResultsContainer.classList.add('hidden');
                 setActiveMode('channel');
                 if (dateFromInput) dateFromInput.focus();
-                showMessage(`Channel "${currentChannel.title || 'Channel'}" selected. Choose date range below and click Queue.`, 'msg-info');
+                showMessage(`Channel "${currentChannel.title || 'Channel'}" selected. Choose date range (optional) below and click Queue.`, 'msg-info');
             }
         });
     }
@@ -1042,16 +1042,10 @@ document.addEventListener('DOMContentLoaded', () => {
         submitBtn.disabled = true;
 
         if (mode === 'channel') {
-            const dateFrom = dateFromInput.value;
-            const dateTo = dateToInput.value;
+            const dateFrom = dateFromInput.value ? dateFromInput.value.trim() : '';
+            const dateTo = dateToInput.value ? dateToInput.value.trim() : '';
 
-            if (!dateFrom || !dateTo) {
-                showMessage('Please select both From Date and To Date.', 'msg-error');
-                submitBtn.disabled = false;
-                return;
-            }
-
-            if (dateFrom > dateTo) {
+            if (dateFrom && dateTo && dateFrom > dateTo) {
                 showMessage('From Date must be earlier than or equal to To Date.', 'msg-error');
                 submitBtn.disabled = false;
                 return;
@@ -1067,7 +1061,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (mediaTypes.length === 0) mediaTypes = ['all'];
             }
 
-            showMessage('Scanning channel date range with PID logarithmic search...', 'msg-info');
+            const hasDateFilter = Boolean(dateFrom || dateTo);
+            if (!hasDateFilter) {
+                showMessage('Fetching all channel videos...', 'msg-info');
+            } else {
+                showMessage('Scanning channel date range with PID logarithmic search...', 'msg-info');
+            }
 
             try {
                 const response = await fetch('/api/channel-scan', {
@@ -1075,8 +1074,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         url: url,
-                        date_from: dateFrom,
-                        date_to: dateTo,
+                        date_from: dateFrom || null,
+                        date_to: dateTo || null,
                         media_types: mediaTypes
                     })
                 });
@@ -1084,12 +1083,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 const data = await response.json().catch(() => ({}));
 
                 if (response.ok) {
+                    const isAllVideos = (!hasDateFilter) || (data.date_from === 'All time' && data.date_to === 'Present');
                     if (!data.count || data.count === 0) {
-                        showMessage(`No videos found between ${data.date_from} and ${data.date_to}.`, 'msg-info');
+                        showMessage(isAllVideos ? 'No videos found for this channel.' : `No videos found between ${data.date_from} and ${data.date_to}.`, 'msg-info');
                         submitBtn.disabled = false;
                     } else {
-                        modalTitle.textContent = data.channel_title ? `${data.channel_title} - Date Scan` : 'Channel Scan Results';
-                        modalText.textContent = `Found ${data.count} video${data.count !== 1 ? 's' : ''} between ${data.date_from} and ${data.date_to}. Queue all?`;
+                        modalTitle.textContent = data.channel_title ? `${data.channel_title} - ${isAllVideos ? 'All Videos' : 'Date Scan'}` : 'Channel Scan Results';
+                        modalText.textContent = isAllVideos
+                            ? `Found ${data.count} video${data.count !== 1 ? 's' : ''} (all videos). Queue all?`
+                            : `Found ${data.count} video${data.count !== 1 ? 's' : ''} between ${data.date_from} and ${data.date_to}. Queue all?`;
                         pendingChannelItems = data.items;
                         pendingPlaylistUrl = null;
                         modal.classList.remove('hidden');

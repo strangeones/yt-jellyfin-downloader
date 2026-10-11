@@ -97,8 +97,8 @@ class DownloadRequest(BaseModel):
 
 class ChannelScanRequest(BaseModel):
     url: str
-    date_from: str
-    date_to: str
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
     media_types: Optional[List[str]] = ["all"]
 
 class ChannelQueryRequest(BaseModel):
@@ -1447,6 +1447,37 @@ async def find_boundary_index_pid(
 
     return high
 
+def format_channel_entries(entries: list, channel_url: Optional[str] = None) -> list:
+    result_items = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        vid_id = entry.get('id')
+        url = entry.get('url') or entry.get('webpage_url')
+        if not url and vid_id:
+            is_tiktok = (
+                (bool(channel_url) and "tiktok" in channel_url.lower())
+                or "tiktok" in str(entry.get('extractor', '')).lower()
+                or "tiktok" in str(entry.get('webpage_url', '')).lower()
+            )
+            if is_tiktok:
+                uploader = entry.get('uploader') or entry.get('uploader_id')
+                if uploader and not uploader.startswith('@'):
+                    uploader = f"@{uploader}"
+                url = f"https://www.tiktok.com/{uploader}/video/{vid_id}" if uploader else f"https://www.tiktok.com/video/{vid_id}"
+            else:
+                url = f"https://www.youtube.com/watch?v={vid_id}"
+        if url:
+            d = extract_entry_date(entry)
+            d_str = d.strftime("%Y-%m-%d") if d else ""
+            result_items.append({
+                "id": vid_id or "",
+                "url": url,
+                "title": entry.get('title') or 'Unknown Title',
+                "upload_date": d_str
+            })
+    return result_items
+
 async def scan_entries_date_range_pid(entries: list, date_from: date, date_to: date) -> list:
     if not entries:
         return []
@@ -1466,28 +1497,7 @@ async def scan_entries_date_range_pid(entries: list, date_from: date, date_to: d
 
     # Slice target items
     target_entries = entries[start_idx:end_idx]
-    result_items = []
-    for entry in target_entries:
-        vid_id = entry.get('id')
-        url = entry.get('url') or entry.get('webpage_url')
-        if not url and vid_id:
-            if "tiktok" in str(entry.get('extractor', '')) or "tiktok" in str(entry.get('webpage_url', '')):
-                uploader = entry.get('uploader') or entry.get('uploader_id')
-                if uploader and not uploader.startswith('@'):
-                    uploader = f"@{uploader}"
-                url = f"https://www.tiktok.com/{uploader}/video/{vid_id}" if uploader else f"https://www.tiktok.com/video/{vid_id}"
-            else:
-                url = f"https://www.youtube.com/watch?v={vid_id}"
-        if url:
-            d = extract_entry_date(entry)
-            d_str = d.strftime("%Y-%m-%d") if d else ""
-            result_items.append({
-                "id": vid_id or "",
-                "url": url,
-                "title": entry.get('title') or 'Unknown Title',
-                "upload_date": d_str
-            })
-    return result_items
+    return format_channel_entries(target_entries)
 
 async def fetch_channel_tab_entries(tab_url: str):
     cmd = [
@@ -1535,19 +1545,61 @@ async def scan_channel_date_range(request: ChannelScanRequest):
     if not is_valid_media_url(request.url):
         raise HTTPException(status_code=400, detail="Invalid channel URL. Must be from YouTube or TikTok.")
 
-    try:
-        target_date_from = parse_date_string(request.date_from)
-        target_date_to = parse_date_string(request.date_to)
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
-
-    if target_date_from > target_date_to:
-        raise HTTPException(status_code=400, detail="From Date cannot be later than To Date.")
+    raw_from = request.date_from.strip() if request.date_from and request.date_from.strip() else None
+    raw_to = request.date_to.strip() if request.date_to and request.date_to.strip() else None
 
     tab_urls = determine_channel_tab_urls(request.url, request.media_types)
     all_matched_items = []
     channel_name = None
     found_any_tab = False
+
+    # Default to all videos if no timeframe/dates are entered
+    if not raw_from and not raw_to:
+        for tab_url in tab_urls:
+            title, entries = await fetch_channel_tab_entries(tab_url)
+            if title and not channel_name:
+                channel_name = title
+            if entries:
+                found_any_tab = True
+                matched = format_channel_entries(entries, tab_url)
+                all_matched_items.extend(matched)
+
+        if not found_any_tab:
+            title, entries = await fetch_channel_tab_entries(request.url)
+            if title and not channel_name:
+                channel_name = title
+            if entries:
+                matched = format_channel_entries(entries, request.url)
+                all_matched_items.extend(matched)
+
+        unique_items = []
+        seen_ids = set()
+        for item in all_matched_items:
+            vid_id = item.get('id') or item.get('url')
+            if vid_id and vid_id not in seen_ids:
+                seen_ids.add(vid_id)
+                unique_items.append(item)
+
+        return {
+            "channel_title": channel_name or "Channel",
+            "count": len(unique_items),
+            "date_from": raw_from or 'All time',
+            "date_to": raw_to or 'Present',
+            "items": unique_items
+        }
+
+    # One or both dates provided: default missing date_to to today, date_from to 2005-01-01
+    effective_date_from = raw_from if raw_from else "2005-01-01"
+    effective_date_to = raw_to if raw_to else date.today().strftime("%Y-%m-%d")
+
+    try:
+        target_date_from = parse_date_string(effective_date_from)
+        target_date_to = parse_date_string(effective_date_to)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
+    if target_date_from > target_date_to:
+        raise HTTPException(status_code=400, detail="From Date cannot be later than To Date.")
 
     for tab_url in tab_urls:
         title, entries = await fetch_channel_tab_entries(tab_url)
@@ -1577,8 +1629,8 @@ async def scan_channel_date_range(request: ChannelScanRequest):
     return {
         "channel_title": channel_name or "Channel",
         "count": len(unique_items),
-        "date_from": request.date_from,
-        "date_to": request.date_to,
+        "date_from": effective_date_from,
+        "date_to": effective_date_to,
         "items": unique_items
     }
 
