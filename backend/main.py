@@ -118,7 +118,25 @@ state_lock = None
 
 def is_valid_youtube_url(url: str) -> bool:
     pattern = r'^(https?://)?([a-zA-Z0-9-]+\.)*(youtube\.com|youtu\.be)/.+$'
-    return re.match(pattern, url) is not None
+    return bool(re.match(pattern, (url or '').strip()))
+
+def is_valid_tiktok_url(url: str) -> bool:
+    pattern = r'^(https?://)?([a-zA-Z0-9-]+\.)*(tiktok\.com)/.+$'
+    return bool(re.match(pattern, (url or '').strip()))
+
+def is_valid_media_url(url: str) -> bool:
+    return is_valid_youtube_url(url) or is_valid_tiktok_url(url)
+
+def get_ytdlp_base_args(url: Optional[str] = None) -> List[str]:
+    args = []
+    cookies_path = os.getenv("COOKIES_FILE", "/app/data/cookies.txt")
+    if os.path.exists(cookies_path):
+        args.extend(["--cookies", cookies_path])
+    if url and ("tiktok.com" in url):
+        impersonate_client = os.getenv("TIKTOK_IMPERSONATE")
+        if impersonate_client:
+            args.extend(["--impersonate", impersonate_client])
+    return args
 
 def format_size(bytes_size):
     if not bytes_size:
@@ -131,12 +149,13 @@ def format_size(bytes_size):
 
 async def fetch_metadata(task):
     try:
-        cmd = ["yt-dlp", "-J", "--no-playlist", task['url']]
+        cmd = ["yt-dlp", "-J", "--no-playlist"] + get_ytdlp_base_args(task.get('url')) + [task['url']]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, stderr = await proc.communicate()
         if proc.returncode == 0:
             info = json.loads(stdout)
-            task['title'] = info.get('title', 'Unknown Title')
+            raw_title = info.get('title') or info.get('description') or 'Unknown Title'
+            task['title'] = raw_title.strip()
             size_bytes = info.get('filesize') or info.get('filesize_approx')
             if size_bytes:
                 task['size'] = format_size(size_bytes)
@@ -155,16 +174,28 @@ async def fetch_metadata(task):
 
 async def fetch_playlist(url: str):
     try:
-        cmd = ["yt-dlp", "--flat-playlist", "--yes-playlist", "-J", "--compat-options", "no-youtube-unavailable-videos", url]
+        cmd = ["yt-dlp", "--flat-playlist", "--yes-playlist", "-J"]
+        if "youtube.com" in url or "youtu.be" in url:
+            cmd.extend(["--compat-options", "no-youtube-unavailable-videos"])
+        cmd.extend(get_ytdlp_base_args(url))
+        cmd.append(url)
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, _ = await proc.communicate()
         if proc.returncode == 0:
             info = json.loads(stdout)
             entries = info.get('entries', [])
             for entry in entries:
-                video_url = entry.get('url')
+                if not isinstance(entry, dict):
+                    continue
+                video_url = entry.get('url') or entry.get('webpage_url')
                 if not video_url and entry.get('id'):
-                    video_url = f"https://www.youtube.com/watch?v={entry['id']}"
+                    if "tiktok" in url or "tiktok" in str(entry.get('extractor', '')):
+                        uploader = entry.get('uploader') or entry.get('uploader_id')
+                        if uploader and not uploader.startswith('@'):
+                            uploader = f"@{uploader}"
+                        video_url = f"https://www.tiktok.com/{uploader}/video/{entry['id']}" if uploader else f"https://www.tiktok.com/video/{entry['id']}"
+                    else:
+                        video_url = f"https://www.youtube.com/watch?v={entry['id']}"
                     
                 if video_url:
                     task_id = secrets.token_hex(8)
@@ -245,7 +276,8 @@ async def process_queue():
                 "--embed-metadata",
                 "--socket-timeout", "30",
                 "--no-overwrites",
-                "-o", f"{media_dir}/%(uploader)s - %(upload_date)s - %(title)s [%(id)s].%(ext)s",
+            ] + get_ytdlp_base_args(task['url']) + [
+                "-o", f"{media_dir}/%(uploader,channel,creator,uploader_id)s - %(upload_date)s - %(title,id).120s [%(id)s].%(ext)s",
                 task['url']
             ]
             
@@ -474,7 +506,7 @@ def normalize_channel_url(input_str: str) -> str:
     s = (input_str or "").strip()
     if not s:
         return ""
-    if s.startswith("http://") or s.startswith("https://") or s.startswith("www.") or "youtube.com/" in s or "youtu.be/" in s:
+    if s.startswith("http://") or s.startswith("https://") or s.startswith("www.") or "youtube.com/" in s or "youtu.be/" in s or "tiktok.com/" in s:
         if not s.startswith("http://") and not s.startswith("https://"):
             s = f"https://{s}"
     elif s.startswith("@"):
@@ -483,7 +515,10 @@ def normalize_channel_url(input_str: str) -> str:
         s = f"https://www.youtube.com/channel/{s}"
     else:
         s = f"https://www.youtube.com/@{s}"
-    s = re.sub(r'/(videos|playlists|shorts|featured|streams|podcasts|posts|community|about)/?$', '', s.rstrip('/'))
+    if "tiktok.com" not in s:
+        s = re.sub(r'/(videos|playlists|shorts|featured|streams|podcasts|posts|community|about)/?$', '', s.rstrip('/'))
+    else:
+        s = s.rstrip('/')
     return s
 
 
@@ -845,10 +880,11 @@ def format_duration(dur: Any) -> str:
 async def fetch_and_parse_channel_videos(channel_input: str) -> dict:
     base_url = normalize_channel_url(channel_input)
     if not base_url:
-        raise HTTPException(status_code=400, detail="Invalid YouTube channel URL or identifier.")
+        raise HTTPException(status_code=400, detail="Invalid channel URL or identifier.")
         
-    target_url = f"{base_url}/videos"
-    cmd = ["python3", "-m", "yt_dlp", "--flat-playlist", "-J", "--playlist-end", "500", target_url]
+    is_tiktok = "tiktok.com" in base_url
+    target_url = base_url if is_tiktok else f"{base_url}/videos"
+    cmd = ["python3", "-m", "yt_dlp", "--flat-playlist", "-J", "--playlist-end", "500"] + get_ytdlp_base_args(target_url) + [target_url]
     
     try:
         res = subprocess.run(
@@ -861,7 +897,7 @@ async def fetch_and_parse_channel_videos(channel_input: str) -> dict:
         raise HTTPException(status_code=502, detail=f"Failed to execute yt-dlp: {str(e)}")
 
     if res.returncode != 0 and target_url != base_url:
-        cmd_fallback = ["python3", "-m", "yt_dlp", "--flat-playlist", "-J", "--playlist-end", "500", base_url]
+        cmd_fallback = ["python3", "-m", "yt_dlp", "--flat-playlist", "-J", "--playlist-end", "500"] + get_ytdlp_base_args(base_url) + [base_url]
         try:
             res_fallback = subprocess.run(
                 cmd_fallback,
@@ -876,10 +912,11 @@ async def fetch_and_parse_channel_videos(channel_input: str) -> dict:
 
     if res.returncode != 0:
         err = (res.stderr or "").lower()
+        platform_name = "TikTok" if is_tiktok else "YouTube"
         if "404" in err or "not found" in err:
-            raise HTTPException(status_code=404, detail="Channel not found on YouTube.")
+            raise HTTPException(status_code=404, detail=f"Channel not found on {platform_name}.")
         err_msg = (res.stderr or "").strip()[:200]
-        raise HTTPException(status_code=502, detail=f"Failed to fetch channel from YouTube: {err_msg}")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch channel from {platform_name}: {err_msg}")
 
     try:
         stdout = (res.stdout or "").strip()
@@ -949,7 +986,13 @@ async def fetch_and_parse_channel_videos(channel_input: str) -> dict:
         seen_ids.add(vid_id)
 
         if not video_url or not video_url.startswith("http"):
-            video_url = f"https://www.youtube.com/watch?v={vid_id}"
+            if is_tiktok:
+                uploader = entry.get("uploader") or entry.get("uploader_id") or channel_name
+                if uploader and not uploader.startswith("@"):
+                    uploader = f"@{uploader}"
+                video_url = f"https://www.tiktok.com/{uploader}/video/{vid_id}" if uploader else f"https://www.tiktok.com/video/{vid_id}"
+            else:
+                video_url = f"https://www.youtube.com/watch?v={vid_id}"
 
         title = entry.get("title") or ""
 
@@ -967,7 +1010,8 @@ async def fetch_and_parse_channel_videos(channel_input: str) -> dict:
                         thumb = t["url"]
                         break
         if not thumb:
-            thumb = f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg"
+            if not is_tiktok:
+                thumb = f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg"
 
         videos.append({
             "id": vid_id,
@@ -993,7 +1037,16 @@ async def fetch_and_parse_channel_videos(channel_input: str) -> dict:
 async def fetch_and_parse_channel_playlists(channel_input: str) -> dict:
     base_url = normalize_channel_url(channel_input)
     if not base_url:
-        raise HTTPException(status_code=400, detail="Invalid YouTube channel URL or identifier.")
+        raise HTTPException(status_code=400, detail="Invalid channel URL or identifier.")
+        
+    if "tiktok.com" in base_url:
+        return {
+            "channel": "TikTok Creator",
+            "channel_id": "",
+            "channel_url": base_url,
+            "count": 0,
+            "playlists": []
+        }
         
     target_url = f"{base_url}/playlists"
     try:
@@ -1214,10 +1267,14 @@ async def post_channel_playlists(req: ChannelQueryRequest):
 
 @app.get("/api/playlist-info")
 async def get_playlist_info(url: str):
-    if not is_valid_youtube_url(url):
-        raise HTTPException(status_code=400, detail="Invalid YouTube URL.")
+    if not is_valid_media_url(url):
+        raise HTTPException(status_code=400, detail="Invalid media URL. Must be from YouTube or TikTok.")
     
-    cmd = ["yt-dlp", "--flat-playlist", "--yes-playlist", "-J", "--compat-options", "no-youtube-unavailable-videos", url]
+    cmd = ["yt-dlp", "--flat-playlist", "--yes-playlist", "-J"]
+    if "youtube.com" in url or "youtu.be" in url:
+        cmd.extend(["--compat-options", "no-youtube-unavailable-videos"])
+    cmd.extend(get_ytdlp_base_args(url))
+    cmd.append(url)
     try:
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, stderr = await proc.communicate()
@@ -1264,13 +1321,16 @@ async def resolve_entry_date(entry: dict) -> Optional[date]:
     d = extract_entry_date(entry)
     if d is not None:
         return d
-    video_url = entry.get('url')
+    video_url = entry.get('url') or entry.get('webpage_url')
     if not video_url and entry.get('id'):
-        video_url = f"https://www.youtube.com/watch?v={entry['id']}"
+        if "tiktok" in str(entry.get('extractor', '')) or "tiktok" in str(entry.get('webpage_url', '')):
+            video_url = f"https://www.tiktok.com/video/{entry['id']}"
+        else:
+            video_url = f"https://www.youtube.com/watch?v={entry['id']}"
     if not video_url:
         return None
     try:
-        cmd = ["yt-dlp", "-J", "--no-playlist", video_url]
+        cmd = ["yt-dlp", "-J", "--no-playlist"] + get_ytdlp_base_args(video_url) + [video_url]
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
@@ -1409,9 +1469,15 @@ async def scan_entries_date_range_pid(entries: list, date_from: date, date_to: d
     result_items = []
     for entry in target_entries:
         vid_id = entry.get('id')
-        url = entry.get('url')
+        url = entry.get('url') or entry.get('webpage_url')
         if not url and vid_id:
-            url = f"https://www.youtube.com/watch?v={vid_id}"
+            if "tiktok" in str(entry.get('extractor', '')) or "tiktok" in str(entry.get('webpage_url', '')):
+                uploader = entry.get('uploader') or entry.get('uploader_id')
+                if uploader and not uploader.startswith('@'):
+                    uploader = f"@{uploader}"
+                url = f"https://www.tiktok.com/{uploader}/video/{vid_id}" if uploader else f"https://www.tiktok.com/video/{vid_id}"
+            else:
+                url = f"https://www.youtube.com/watch?v={vid_id}"
         if url:
             d = extract_entry_date(entry)
             d_str = d.strftime("%Y-%m-%d") if d else ""
@@ -1429,9 +1495,11 @@ async def fetch_channel_tab_entries(tab_url: str):
         "--flat-playlist",
         "--yes-playlist",
         "-J",
-        "--compat-options", "no-youtube-unavailable-videos",
-        tab_url
     ]
+    if "youtube.com" in tab_url or "youtu.be" in tab_url:
+        cmd.extend(["--compat-options", "no-youtube-unavailable-videos"])
+    cmd.extend(get_ytdlp_base_args(tab_url))
+    cmd.append(tab_url)
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -1439,7 +1507,7 @@ async def fetch_channel_tab_entries(tab_url: str):
         stdout, _ = await proc.communicate()
         if proc.returncode == 0:
             info = json.loads(stdout)
-            title = info.get('channel') or info.get('uploader') or info.get('title') or 'YouTube Channel'
+            title = info.get('channel') or info.get('uploader') or info.get('title') or ('TikTok Creator' if 'tiktok' in tab_url else 'YouTube Channel')
             entries = info.get('entries') or []
             return title, entries
     except Exception as e:
@@ -1447,6 +1515,8 @@ async def fetch_channel_tab_entries(tab_url: str):
     return None, []
 
 def determine_channel_tab_urls(url: str, media_types: Optional[List[str]]) -> List[str]:
+    if "tiktok.com" in url:
+        return [url]
     base_url = re.sub(r'/(videos|shorts|streams|featured)/?$', '', url.rstrip('/'))
     types = [t.lower() for t in (media_types or ['all'])]
     if 'all' in types:
@@ -1462,8 +1532,8 @@ def determine_channel_tab_urls(url: str, media_types: Optional[List[str]]) -> Li
     return urls if urls else [url]
 
 async def scan_channel_date_range(request: ChannelScanRequest):
-    if not is_valid_youtube_url(request.url):
-        raise HTTPException(status_code=400, detail="Invalid YouTube channel URL. Must be from youtube.com or youtu.be.")
+    if not is_valid_media_url(request.url):
+        raise HTTPException(status_code=400, detail="Invalid channel URL. Must be from YouTube or TikTok.")
 
     try:
         target_date_from = parse_date_string(request.date_from)
@@ -1522,10 +1592,13 @@ async def add_download(request: DownloadRequest):
     if request.items:
         queued_count = 0
         for item in request.items:
-            video_url = item.get('url')
+            video_url = item.get('url') or item.get('webpage_url')
             if not video_url and item.get('id'):
-                video_url = f"https://www.youtube.com/watch?v={item['id']}"
-            if video_url:
+                if "tiktok" in str(item.get('extractor', '')) or "tiktok" in str(item.get('webpage_url', '')):
+                    video_url = f"https://www.tiktok.com/video/{item['id']}"
+                else:
+                    video_url = f"https://www.youtube.com/watch?v={item['id']}"
+            if video_url and is_valid_media_url(video_url):
                 task_id = secrets.token_hex(8)
                 task = {
                     "id": task_id,
@@ -1548,8 +1621,8 @@ async def add_download(request: DownloadRequest):
                 queued_count += 1
         return {"message": f"Successfully queued {queued_count} videos", "count": queued_count}
 
-    if not request.url or not is_valid_youtube_url(request.url):
-        raise HTTPException(status_code=400, detail="Invalid YouTube URL. Must be from youtube.com or youtu.be.")
+    if not request.url or not is_valid_media_url(request.url):
+        raise HTTPException(status_code=400, detail="Invalid media URL. Must be from YouTube or TikTok.")
         
     if request.is_playlist:
         asyncio.create_task(fetch_playlist(request.url))

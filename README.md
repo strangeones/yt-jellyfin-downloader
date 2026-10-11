@@ -1,6 +1,6 @@
-# YouTube Jellyfin Downloader
+# YouTube & TikTok Jellyfin Downloader
 
-A lightweight web application and sidecar service designed to seamlessly download and organize YouTube videos, playlists, and channels directly into your Jellyfin media library.
+A lightweight web application and sidecar service designed to seamlessly download and organize YouTube and TikTok videos, playlists, and channels directly into your Jellyfin media library.
 
 ## Quickstart
 
@@ -32,7 +32,7 @@ services:
       - APP_USERNAME=admin
       - APP_PASSWORD=supersecretpassword
     volumes:
-      # Persistent storage for authentication credentials (auth.json)
+      # Persistent storage for authentication credentials (auth.json) and optional cookies.txt
       - ./data:/app/data
       # Map your host media library directory to /app/media inside the container
       - /path/to/your/jellyfin/youtube/library:/app/media
@@ -42,7 +42,7 @@ services:
 
 | Host Path | Container Path | Purpose |
 | :--- | :--- | :--- |
-| `./data` | `/app/data` | Persistent storage for authentication credentials (`auth.json`), session tokens, and local state across container rebuilds. |
+| `./data` | `/app/data` | Persistent storage for authentication credentials (`auth.json`), session tokens, local state, and optional `cookies.txt` (for YouTube bot detection or TikTok auth). |
 | `/path/to/your/jellyfin/youtube/library` | `/app/media` | Target directory where downloaded videos, thumbnails, and metadata are saved for Jellyfin ingestion. |
 
 ### 3. Build & Run

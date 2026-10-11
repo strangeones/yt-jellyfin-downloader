@@ -129,12 +129,21 @@ document.addEventListener('DOMContentLoaded', () => {
     // Ensure initial mode is cleanly synced
     handleModeChange(getActiveMode());
 
-    // Auto-detect playlist and channel URLs
-    const isPlaylistUrl = (url) => /[?&]list=|\/playlist/.test(url || '');
-    const isChannelUrl = (url) => /\/(@|channel\/|c\/|user\/)/.test(url || '');
+    // Auto-detect single, playlist, and channel URLs
+    const isVideoUrl = (url) => {
+        return /\/video\/|\/watch|\/shorts\/|youtu\.be\/|\/photo\/|vm\.tiktok\.com|vt\.tiktok\.com/.test(url || '');
+    };
+    const isPlaylistUrl = (url) => /[?&]list=|\/playlist|\/collection\//.test(url || '');
+    const isChannelUrl = (url) => {
+        if (isVideoUrl(url)) return false;
+        return /\/(@|channel\/|c\/|user\/)/.test(url || '');
+    };
 
     function autoDetectMode(value) {
-        if (isChannelUrl(value)) {
+        if (!value) return;
+        if (isVideoUrl(value)) {
+            setActiveMode('single');
+        } else if (isChannelUrl(value)) {
             setActiveMode('channel');
         } else if (isPlaylistUrl(value)) {
             setActiveMode('playlist');
@@ -1012,9 +1021,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const url = urlInput.value.trim();
+        let url = urlInput.value.trim();
         const mode = getActiveMode();
         if (!url) return;
+
+        // Auto-prefix protocol for common domain paste without scheme
+        if (!/^https?:\/\//i.test(url)) {
+            if (/^(www\.)?(youtube\.com|youtu\.be|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\//i.test(url)) {
+                url = 'https://' + url;
+                urlInput.value = url;
+            }
+        }
 
         // If not a URL, perform a search instead
         if (!/^https?:\/\//i.test(url)) {
