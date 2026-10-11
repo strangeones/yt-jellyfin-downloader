@@ -239,8 +239,14 @@ async def update_yt_dlp():
             print(f"Failed to update yt-dlp: {e}")
         await asyncio.sleep(86400) # Update daily
 
-async def process_queue():
-    global current_task, active_process
+def get_media_dir(url: str) -> str:
+    media_base_dir = os.getenv("MEDIA_DIR", "/app/media")
+    if is_valid_tiktok_url(url):
+        return os.getenv("TIKTOK_MEDIA_DIR", os.path.join(media_base_dir, "tiktok"))
+    return os.getenv("YOUTUBE_MEDIA_DIR", media_base_dir)
+
+async def download_worker():
+    global current_task, active_process, state_lock
     while True:
         task = await queue.get()
         if task.get('cancelled'):
@@ -254,7 +260,12 @@ async def process_queue():
             queue.task_done()
             continue
             
-        async with state_lock:
+        if state_lock:
+            async with state_lock:
+                current_task = task
+                if task in queued_tasks:
+                    queued_tasks.remove(task)
+        else:
             current_task = task
             if task in queued_tasks:
                 queued_tasks.remove(task)
@@ -264,7 +275,7 @@ async def process_queue():
         task['current_file_index'] = 0
         
         try:
-            media_dir = "/app/media"
+            media_dir = get_media_dir(task["url"])
             os.makedirs(media_dir, exist_ok=True)
             
             cmd = [
@@ -288,7 +299,15 @@ async def process_queue():
                 stderr=asyncio.subprocess.STDOUT
             )
             
-            async with state_lock:
+            if state_lock:
+                async with state_lock:
+                    active_process = proc
+                    if task.get('cancelled'):
+                        try:
+                            active_process.terminate()
+                        except Exception:
+                            pass
+            else:
                 active_process = proc
                 if task.get('cancelled'):
                     try:
@@ -374,7 +393,21 @@ async def process_queue():
                 task['error'] = str(e)
         finally:
             proc_to_wait = None
-            async with state_lock:
+            if state_lock:
+                async with state_lock:
+                    if active_process and active_process.returncode is None:
+                        try:
+                            active_process.terminate()
+                            proc_to_wait = active_process
+                        except Exception:
+                            pass
+                    task['completed_at'] = datetime.now().isoformat()
+                    history.insert(0, task)
+                    if len(history) > 50:
+                        history.pop()
+                    current_task = None
+                    active_process = None
+            else:
                 if active_process and active_process.returncode is None:
                     try:
                         active_process.terminate()
@@ -395,13 +428,15 @@ async def process_queue():
                     pass
             queue.task_done()
 
+process_queue = download_worker
+
 @app.on_event("startup")
 async def startup_event():
     global state_lock
     state_lock = asyncio.Lock()
     auth.auto_migrate_or_init()
     asyncio.create_task(update_yt_dlp())
-    asyncio.create_task(process_queue())
+    asyncio.create_task(download_worker())
 
 # ---------------------------------------------------------------------------
 # Authentication Endpoints
