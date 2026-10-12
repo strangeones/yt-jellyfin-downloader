@@ -1619,4 +1619,327 @@ document.addEventListener('DOMContentLoaded', () => {
             enableLoginMode();
         });
     }
+
+    // =========================================================================
+    // Sidebar Navigation & Tab Switching
+    // =========================================================================
+    const navTabManual = document.getElementById('nav-tab-manual');
+    const navTabAutomonitor = document.getElementById('nav-tab-automonitor');
+    const viewManual = document.getElementById('view-manual');
+    const viewAutomonitor = document.getElementById('view-automonitor');
+    const subsActiveBadge = document.getElementById('subs-active-badge');
+
+    function switchTab(tabName) {
+        if (tabName === 'automonitor') {
+            if (navTabAutomonitor) {
+                navTabAutomonitor.classList.add('active');
+                navTabAutomonitor.setAttribute('aria-selected', 'true');
+            }
+            if (navTabManual) {
+                navTabManual.classList.remove('active');
+                navTabManual.setAttribute('aria-selected', 'false');
+            }
+            if (viewAutomonitor) viewAutomonitor.classList.remove('hidden');
+            if (viewManual) viewManual.classList.add('hidden');
+            fetchSubscriptions();
+        } else {
+            if (navTabManual) {
+                navTabManual.classList.add('active');
+                navTabManual.setAttribute('aria-selected', 'true');
+            }
+            if (navTabAutomonitor) {
+                navTabAutomonitor.classList.remove('active');
+                navTabAutomonitor.setAttribute('aria-selected', 'false');
+            }
+            if (viewManual) viewManual.classList.remove('hidden');
+            if (viewAutomonitor) viewAutomonitor.classList.add('hidden');
+        }
+    }
+
+    if (navTabManual) {
+        navTabManual.addEventListener('click', () => switchTab('manual'));
+    }
+    if (navTabAutomonitor) {
+        navTabAutomonitor.addEventListener('click', () => switchTab('automonitor'));
+    }
+
+    // =========================================================================
+    // Auto-Monitor Subscriptions Logic
+    // =========================================================================
+    const subscribeForm = document.getElementById('subscribe-form');
+    const subscribeInput = document.getElementById('subscribe-input');
+    const subscribeInterval = document.getElementById('subscribe-interval');
+    const subscribeSubmitBtn = document.getElementById('subscribe-submit-btn');
+    const subscribeMessage = document.getElementById('subscribe-message');
+    const subscriptionsList = document.getElementById('subscriptions-list');
+    const subscriptionsCount = document.getElementById('subscriptions-count');
+    const refreshSubsBtn = document.getElementById('refresh-subs-btn');
+
+    let subscriptionsData = [];
+
+    function showSubscribeMessage(text, type = 'info') {
+        if (!subscribeMessage) return;
+        subscribeMessage.textContent = text;
+        subscribeMessage.className = text ? (type === 'error' ? 'auth-message auth-error' : 'auth-message auth-success') : '';
+        if (text) {
+            setTimeout(() => {
+                if (subscribeMessage.textContent === text) {
+                    subscribeMessage.textContent = '';
+                    subscribeMessage.className = '';
+                }
+            }, 5000);
+        }
+    }
+
+    function formatTimeAgo(isoString) {
+        if (!isoString) return 'Never checked';
+        try {
+            const date = new Date(isoString);
+            const now = new Date();
+            const diffSec = Math.floor((now - date) / 1000);
+            if (diffSec < 10) return 'Just now';
+            if (diffSec < 60) return `${diffSec}s ago`;
+            const diffMin = Math.floor(diffSec / 60);
+            if (diffMin < 60) return `${diffMin}m ago`;
+            const diffHour = Math.floor(diffMin / 60);
+            if (diffHour < 24) return `${diffHour}h ago`;
+            return date.toLocaleDateString();
+        } catch {
+            return isoString;
+        }
+    }
+
+    function renderSubscriptions() {
+        if (!subscriptionsList) return;
+
+        if (subscriptionsCount) {
+            subscriptionsCount.textContent = subscriptionsData.length;
+        }
+
+        const activeCount = subscriptionsData.filter(s => s.enabled).length;
+        if (subsActiveBadge) {
+            if (activeCount > 0) {
+                subsActiveBadge.textContent = activeCount;
+                subsActiveBadge.classList.remove('hidden');
+            } else {
+                subsActiveBadge.classList.add('hidden');
+            }
+        }
+
+        if (subscriptionsData.length === 0) {
+            subscriptionsList.innerHTML = `
+                <div class="empty-state">
+                    No monitored creators yet. Add a YouTube channel or TikTok creator URL above.
+                </div>
+            `;
+            return;
+        }
+
+        subscriptionsList.innerHTML = '';
+        subscriptionsData.forEach(sub => {
+            const card = document.createElement('div');
+            card.className = `sub-card ${sub.enabled ? 'active' : 'paused'}`;
+            card.setAttribute('data-id', sub.id);
+
+            const platform = (sub.platform || 'youtube').toLowerCase();
+            const platformLabel = platform === 'tiktok' ? 'TikTok' : 'YouTube';
+            const statusLabel = sub.enabled ? 'Active' : 'Paused';
+            const statusClass = sub.enabled ? 'active' : 'paused';
+            const intervalLabel = sub.interval_seconds >= 60
+                ? `${Math.floor(sub.interval_seconds / 60)}m`
+                : `${sub.interval_seconds}s`;
+
+            const avatarHtml = sub.avatar_url
+                ? `<img class="sub-avatar" src="${escapeHtml(sub.avatar_url)}" alt="${escapeHtml(sub.title)}" onerror="this.outerHTML='<div class=\\'sub-avatar-fallback\\'>${escapeHtml((sub.title || 'C')[0])}</div>'">`
+                : `<div class="sub-avatar-fallback">${escapeHtml((sub.title || 'C')[0])}</div>`;
+
+            card.innerHTML = `
+                <div class="sub-left">
+                    ${avatarHtml}
+                    <div class="sub-details">
+                        <div class="sub-header-row">
+                            <a class="sub-title" href="${escapeHtml(sub.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(sub.title)}">
+                                ${escapeHtml(sub.title || 'Creator')}
+                            </a>
+                            <span class="platform-badge ${platform}">${platformLabel}</span>
+                            <span class="status-badge ${statusClass}">${statusLabel}</span>
+                        </div>
+                        <div class="sub-meta">
+                            <span>Every ${intervalLabel}</span>
+                            <span>•</span>
+                            <span>Checked: <strong class="last-checked-label">${formatTimeAgo(sub.last_checked)}</strong></span>
+                            <span>•</span>
+                            <span>Seen: ${sub.seen_ids ? sub.seen_ids.length : 0} videos</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="sub-actions">
+                    <button type="button" class="btn-sub-action check-now-btn" data-id="${sub.id}" title="Check for new uploads now">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                        <span>Check Now</span>
+                    </button>
+                    <button type="button" class="btn-sub-action toggle-btn" data-id="${sub.id}" data-enabled="${sub.enabled}" title="${sub.enabled ? 'Pause monitoring' : 'Resume monitoring'}">
+                        ${sub.enabled ? `
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                            <span>Pause</span>
+                        ` : `
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                            <span>Resume</span>
+                        `}
+                    </button>
+                    <button type="button" class="btn-sub-action btn-sub-danger delete-btn" data-id="${sub.id}" title="Delete subscription">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                        <span>Delete</span>
+                    </button>
+                </div>
+            `;
+
+            // Bind actions
+            const checkNowBtn = card.querySelector('.check-now-btn');
+            const toggleBtn = card.querySelector('.toggle-btn');
+            const deleteBtn = card.querySelector('.delete-btn');
+
+            if (checkNowBtn) {
+                checkNowBtn.addEventListener('click', () => triggerCheck(sub.id, checkNowBtn));
+            }
+            if (toggleBtn) {
+                toggleBtn.addEventListener('click', () => toggleSubscription(sub.id, !sub.enabled));
+            }
+            if (deleteBtn) {
+                deleteBtn.addEventListener('click', () => deleteSubscription(sub.id));
+            }
+
+            subscriptionsList.appendChild(card);
+        });
+    }
+
+    async function fetchSubscriptions() {
+        try {
+            const res = await fetch('/api/subscriptions');
+            if (res.ok) {
+                subscriptionsData = await res.json();
+                renderSubscriptions();
+            }
+        } catch (err) {
+            console.error('Failed to fetch subscriptions:', err);
+        }
+    }
+
+    async function triggerCheck(subId, btnElement) {
+        if (btnElement) {
+            btnElement.disabled = true;
+            btnElement.innerHTML = `
+                <div class="loading-spinner" style="width:12px;height:12px;border-width:2px;margin:0;"></div>
+                <span>Checking...</span>
+            `;
+        }
+        try {
+            const res = await fetch(`/api/subscriptions/${subId}/check`, { method: 'POST' });
+            const data = await res.json();
+            if (res.ok) {
+                showSubscribeMessage(data.message || 'Check completed.', 'success');
+                await fetchSubscriptions();
+            } else {
+                showSubscribeMessage(data.detail || 'Check failed.', 'error');
+            }
+        } catch (err) {
+            showSubscribeMessage('Network error triggering check.', 'error');
+        } finally {
+            if (btnElement) {
+                btnElement.disabled = false;
+            }
+        }
+    }
+
+    async function toggleSubscription(subId, enable) {
+        try {
+            const res = await fetch(`/api/subscriptions/${subId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: enable })
+            });
+            if (res.ok) {
+                await fetchSubscriptions();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                showSubscribeMessage(err.detail || 'Failed to update subscription.', 'error');
+            }
+        } catch (err) {
+            showSubscribeMessage('Network error updating subscription.', 'error');
+        }
+    }
+
+    async function deleteSubscription(subId) {
+        if (!confirm('Are you sure you want to stop monitoring this creator?')) {
+            return;
+        }
+        try {
+            const res = await fetch(`/api/subscriptions/${subId}`, { method: 'DELETE' });
+            if (res.ok) {
+                showSubscribeMessage('Subscription deleted.', 'success');
+                await fetchSubscriptions();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                showSubscribeMessage(err.detail || 'Failed to delete subscription.', 'error');
+            }
+        } catch (err) {
+            showSubscribeMessage('Network error deleting subscription.', 'error');
+        }
+    }
+
+    if (subscribeForm) {
+        subscribeForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const urlVal = subscribeInput ? subscribeInput.value.trim() : '';
+            if (!urlVal) return;
+
+            const intervalVal = subscribeInterval && subscribeInterval.value ? parseInt(subscribeInterval.value, 10) : null;
+
+            if (subscribeSubmitBtn) {
+                subscribeSubmitBtn.disabled = true;
+                subscribeSubmitBtn.innerHTML = `
+                    <div class="loading-spinner" style="width:14px;height:14px;border-width:2px;margin:0;"></div>
+                    <span>Adding...</span>
+                `;
+            }
+            showSubscribeMessage('Extracting creator details...', 'info');
+
+            try {
+                const payload = { url: urlVal };
+                if (intervalVal) payload.interval_seconds = intervalVal;
+
+                const res = await fetch('/api/subscriptions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json().catch(() => ({}));
+
+                if (res.ok) {
+                    showSubscribeMessage(`Now monitoring "${data.title || urlVal}"!`, 'success');
+                    if (subscribeInput) subscribeInput.value = '';
+                    await fetchSubscriptions();
+                } else {
+                    showSubscribeMessage(data.detail || 'Failed to add subscription.', 'error');
+                }
+            } catch (err) {
+                showSubscribeMessage('Network error adding subscription.', 'error');
+            } finally {
+                if (subscribeSubmitBtn) {
+                    subscribeSubmitBtn.disabled = false;
+                    subscribeSubmitBtn.innerHTML = `
+                        <span>Monitor</span>
+                        <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="icon" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                    `;
+                }
+            }
+        });
+    }
+
+    if (refreshSubsBtn) {
+        refreshSubsBtn.addEventListener('click', fetchSubscriptions);
+    }
+
+    // Initial background load of subscriptions count for badge
+    fetchSubscriptions();
 });

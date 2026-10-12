@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from backend import auth
+from backend import subscriptions
 
 AUTO_UPDATE_YTDLP = os.getenv("AUTO_UPDATE_YTDLP", "false").lower() == "true"
 
@@ -108,6 +109,15 @@ class ChannelQueryRequest(BaseModel):
     channel_id: Optional[str] = None
     id: Optional[str] = None
     q: Optional[str] = None
+
+class SubscriptionCreateRequest(BaseModel):
+    url: str
+    interval_seconds: Optional[int] = None
+
+class SubscriptionUpdateRequest(BaseModel):
+    enabled: Optional[bool] = None
+    interval_seconds: Optional[int] = None
+    title: Optional[str] = None
 
 queue = asyncio.Queue()
 current_task = None
@@ -437,6 +447,7 @@ async def startup_event():
     auth.auto_migrate_or_init()
     asyncio.create_task(update_yt_dlp())
     asyncio.create_task(download_worker())
+    asyncio.create_task(auto_monitor_loop())
 
 # ---------------------------------------------------------------------------
 # Authentication Endpoints
@@ -1779,6 +1790,163 @@ async def cancel_task(task_id: str):
             return {"message": "Active task cancelled"}
             
     raise HTTPException(status_code=404, detail="Task not found")
+
+# ---------------------------------------------------------------------------
+# Auto-Monitor Subscriptions & Scheduler
+# ---------------------------------------------------------------------------
+
+async def enqueue_media_item(url: str, title: Optional[str] = None):
+    """Enqueue single video into existing download queue."""
+    if not url or not is_valid_media_url(url):
+        return
+    task_id = secrets.token_hex(8)
+    task = {
+        "id": task_id,
+        "url": url,
+        "status": "queued",
+        "added_at": datetime.now().isoformat(),
+        "title": title or "Fetching metadata...",
+        "size": "Calculating...",
+        "progress": 0.0,
+        "eta": "",
+        "cancelled": False,
+        "metadata_fetched": bool(title)
+    }
+    if state_lock:
+        async with state_lock:
+            queued_tasks.append(task)
+    else:
+        queued_tasks.append(task)
+    await queue.put(task)
+    if not title:
+        asyncio.create_task(fetch_metadata(task))
+
+
+async def check_and_enqueue_subscription(sub: Dict[str, Any]) -> int:
+    """Check a subscription for new unseen items and enqueue them."""
+    sub_id = sub["id"]
+    seen_ids = set(sub.get("seen_ids", []))
+    items = await subscriptions.check_subscription_new_videos(sub)
+
+    new_items = [it for it in items if it.get("id") and it["id"] not in seen_ids]
+    if not new_items:
+        await subscriptions.subscription_manager.update_subscription(
+            sub_id,
+            last_checked=datetime.utcnow().isoformat()
+        )
+        return 0
+
+    new_ids = [it["id"] for it in new_items]
+    await subscriptions.subscription_manager.add_seen_ids(sub_id, new_ids)
+
+    # Enqueue in chronological/oldest-to-newest order or received order
+    for item in reversed(new_items):
+        await enqueue_media_item(item["url"], item.get("title"))
+
+    return len(new_items)
+
+
+async def auto_monitor_loop():
+    """Background loop checking subscriptions when intervals elapse."""
+    while True:
+        try:
+            subs = await subscriptions.subscription_manager.list_subscriptions()
+            now_ts = datetime.utcnow().timestamp()
+
+            for sub in subs:
+                if not sub.get("enabled", True):
+                    continue
+                interval = int(sub.get("interval_seconds", 60))
+                last_checked = sub.get("last_checked")
+                should_check = False
+                if not last_checked:
+                    should_check = True
+                else:
+                    try:
+                        last_ts = datetime.fromisoformat(last_checked).timestamp()
+                        if (now_ts - last_ts) >= interval:
+                            should_check = True
+                    except Exception:
+                        should_check = True
+
+                if should_check:
+                    try:
+                        await check_and_enqueue_subscription(sub)
+                    except Exception as e:
+                        print(f"[AutoMonitor] Error checking subscription {sub.get('id')}: {e}")
+
+        except Exception as e:
+            print(f"[AutoMonitor] Scheduler loop error: {e}")
+
+        await asyncio.sleep(5)
+
+
+@app.get("/api/subscriptions")
+async def get_subscriptions():
+    return await subscriptions.subscription_manager.list_subscriptions()
+
+
+@app.post("/api/subscriptions")
+async def create_subscription(req: SubscriptionCreateRequest):
+    raw_url = (req.url or "").strip()
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="Creator or channel URL is required.")
+
+    meta = await subscriptions.extract_channel_metadata(raw_url)
+    sub = await subscriptions.subscription_manager.add_subscription(
+        url=meta.get("url") or raw_url,
+        title=meta.get("title"),
+        platform=meta.get("platform"),
+        avatar_url=meta.get("avatar_url"),
+        channel_id=meta.get("channel_id"),
+        interval_seconds=req.interval_seconds
+    )
+    # Immediately do an initial check to populate initial seen_ids without enqueuing entire backlog
+    try:
+        items = await subscriptions.check_subscription_new_videos(sub)
+        if items:
+            initial_ids = [it["id"] for it in items if it.get("id")]
+            sub = await subscriptions.subscription_manager.add_seen_ids(sub["id"], initial_ids) or sub
+    except Exception as e:
+        print(f"[Subscriptions] Initial check error: {e}")
+
+    return sub
+
+
+@app.delete("/api/subscriptions/{sub_id}")
+async def delete_subscription(sub_id: str):
+    success = await subscriptions.subscription_manager.delete_subscription(sub_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Subscription not found.")
+    return {"message": "Subscription deleted successfully"}
+
+
+@app.patch("/api/subscriptions/{sub_id}")
+async def update_subscription(sub_id: str, req: SubscriptionUpdateRequest):
+    updated = await subscriptions.subscription_manager.update_subscription(
+        sub_id=sub_id,
+        enabled=req.enabled,
+        interval_seconds=req.interval_seconds,
+        title=req.title
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Subscription not found.")
+    return updated
+
+
+@app.post("/api/subscriptions/{sub_id}/check")
+async def trigger_subscription_check(sub_id: str):
+    sub = await subscriptions.subscription_manager.get_subscription(sub_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found.")
+    new_count = await check_and_enqueue_subscription(sub)
+    updated_sub = await subscriptions.subscription_manager.get_subscription(sub_id)
+    return {
+        "message": f"Check completed. Found {new_count} new video(s).",
+        "new_count": new_count,
+        "subscription": updated_sub
+    }
+
 
 frontend_dir = "/app/frontend" if os.path.exists("/app/frontend") else os.path.join(os.path.dirname(__file__), "..", "frontend")
 if os.path.exists(frontend_dir):
